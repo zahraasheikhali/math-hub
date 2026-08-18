@@ -504,7 +504,7 @@ function uid() { return Math.random().toString(36).slice(2,10); }
 function now() { return Date.now(); }
 function fmtDate(ts) { return new Date(ts).toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'}); }
 function initials(n) { return (n||'?').split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase(); }
-function isLate(due,subAt) { return due && subAt && subAt > new Date(due).getTime(); }
+function isLate(due,subAt) { if(!due||!subAt) return false; const end=new Date(due+'T23:59:59').getTime(); return !isNaN(end) ? subAt>end : subAt>new Date(due).getTime(); }
 
 /* ═══════════ PORTAL DATA ═══════════ */
 const TEACHER_EMAIL = 'azl@eduspace.com';
@@ -535,7 +535,7 @@ const KEYS = ['groups','students','messages','submissions','assignments','posts'
 const FILE_FIELDS = { assignments:['fileData','correctionData'], submissions:['fileData','correctedFileData'], meetings:['attachmentData'] };
 const CHUNK = 700000; /* base64 chars per file-chunk doc, safely under Firestore's 1MB limit */
 const CLOUD_ON = !!FIREBASE_CONFIG.projectId && !FIREBASE_CONFIG.projectId.includes('PASTE');
-const APP_VERSION = 'v9.9';
+const APP_VERSION = 'v10.0';
 
 /* Visible sync-status badge (helps confirm what's actually happening when saving). */
 let _syncBusy=0, _syncErr='';
@@ -1528,20 +1528,26 @@ function FullReviewPage({assignId,group,tick,refresh}) {
   if(!a) return <div className="empty-state">Assignment not found.</div>;
 
   /* file viewer */
-  if(viewingFile) return (
+  if(viewingFile) {
+    const vsub=DB.submissions().find(x=>x.id===viewingFile.subId)||{};
+    const vName=viewingFile.corr?vsub.correctedFile:vsub.fileName;
+    const vData=viewingFile.corr?vsub.correctedFileData:vsub.fileData;
+    return (
     <div>
       <button className="a-btn" onClick={()=>setViewingFile(null)} style={{marginBottom:12}}>← Back to students</button>
       <div style={{fontWeight:700,fontSize:15,marginBottom:4}}>
-        {(studs.find(s=>s.id===viewingFile.studentId)||{name:'Unknown'}).name}'s submission
+        {(studs.find(s=>s.id===vsub.studentId)||{name:'Unknown'}).name}'s {viewingFile.corr?'correction':'submission'}
       </div>
-      <div style={{fontSize:12,opacity:0.6,marginBottom:12}}>📎 {viewingFile.fileName} · {fmtDate(viewingFile.submittedAt)}</div>
-      {viewingFile.fileData&&viewingFile.fileData.startsWith('data:image')?
-        <img src={viewingFile.fileData} alt="submission" style={{maxWidth:'100%',border:'2px solid var(--ink)',borderRadius:10}}/>:
-        viewingFile.fileData?<iframe src={viewingFile.fileData} style={{width:'100%',height:'70vh',border:'2px solid var(--ink)',borderRadius:10}} title="submission"/>:
-        <div className="empty-state">File preview not available</div>
+      <div style={{fontSize:12,opacity:0.6,marginBottom:12}}>📎 {vName}{vsub.submittedAt?(' · '+fmtDate(vsub.submittedAt)):''}</div>
+      {vData&&vData.startsWith('data:image')?
+        <img src={vData} alt="file" style={{maxWidth:'100%',border:'2px solid var(--ink)',borderRadius:10}}/>:
+        vData?<iframe src={vData} style={{width:'100%',height:'70vh',border:'2px solid var(--ink)',borderRadius:10}} title="file"/>:
+        <div className="empty-state">⏳ Loading file… if it doesn't appear, wait a moment and tap View again.</div>
       }
+      {vData&&<div style={{marginTop:10}}><a href={vData} download={vName} className="a-btn" style={{textDecoration:'none'}}>⬇ Download</a></div>}
     </div>
   );
+  }
 
   const submitted=allSubs.length, total=studs.length;
   const markedSubs=allSubs.filter(s=>s.mark!==null&&s.mark!==undefined);
@@ -1586,7 +1592,7 @@ function FullReviewPage({assignId,group,tick,refresh}) {
               <div style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap',flexShrink:0}}>
                 {sub?(
                   <>
-                    {late?<span className="tag-late">Late</span>:<span className="tag-ontime">On time</span>}
+                    {a.dueDate&&(late?<span className="tag-late">Late</span>:<span className="tag-ontime">On time</span>)}
                     {sub.mark!==null&&sub.mark!==undefined?<span className="pill pill-blue" style={{fontSize:13,padding:'3px 10px'}}>{sub.mark}/{a.totalMark}</span>:<span className="pill pill-amber">Not marked</span>}
                   </>
                 ):(
@@ -1599,8 +1605,9 @@ function FullReviewPage({assignId,group,tick,refresh}) {
             {sub&&(
               <div style={{borderTop:'1.5px dashed #d0cec4',paddingTop:12,display:'flex',gap:10,alignItems:'center',flexWrap:'wrap'}}>
                 {/* view & download */}
-                <button className="a-btn" onClick={()=>setViewingFile(sub)} style={{background:'var(--chalk-blue)',color:'white',borderColor:'var(--chalk-blue)',fontSize:12}}>👁 View</button>
+                <button className="a-btn" onClick={()=>setViewingFile({subId:sub.id})} style={{background:'var(--chalk-blue)',color:'white',borderColor:'var(--chalk-blue)',fontSize:12}}>👁 View</button>
                 {sub.fileData&&<a href={sub.fileData} download={sub.fileName||'submission'} className="a-btn" style={{textDecoration:'none',fontSize:12}}>⬇ Download</a>}
+                {sub.correctedFile&&<button className="a-btn" onClick={()=>setViewingFile({subId:sub.id,corr:true})} style={{background:'#1F6B43',color:'white',borderColor:'#1F6B43',fontSize:12}}>👁 View correction</button>}
 
                 {/* divider */}
                 <div style={{width:1,height:24,background:'#d0cec4',margin:'0 2px'}}/>
@@ -1684,9 +1691,10 @@ function AssignView({type,groupId,user,onModal,tick,refresh,onReview}) {
                   <div>
                     <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
                       <span className="pill pill-green">✓ Submitted</span>
-                      {isLate(a.dueDate,mySub.submittedAt)?<span className="tag-late">Late</span>:<span className="tag-ontime">On time</span>}
+                      {a.dueDate&&(isLate(a.dueDate,mySub.submittedAt)?<span className="tag-late">Late</span>:<span className="tag-ontime">On time</span>)}
                       {mySub.mark!==null&&mySub.mark!==undefined&&<span className="pill pill-blue">Mark: {mySub.mark}/{a.totalMark}</span>}
                     </div>
+                    {mySub.fileName&&<CorrectionBox name={mySub.fileName} data={mySub.fileData} label="Your submitted file"/>}
                     {mySub.correctedFile&&<CorrectionBox name={mySub.correctedFile} data={mySub.correctedFileData} label="Your correction"/>}
                   </div>
                 ):(
@@ -2729,6 +2737,7 @@ function ParentPortal({user,onLogout}){
 }
 
 /* ═══════════ LESSONS (PowerPoint slide decks, shown as PDF) ═══════════ */
+const SLIDES_HOSTED = true;  /* full build: slides bundled. Lite build sets this false. */
 const LESSONS=[
   {n:1,t:'Expanding Brackets',f:'1__Expanding_Brackets.pptx'},
   {n:2,t:'Prime Factors, LCM & HCF',f:'2__Prime_Factors__LCM__HCF_.pptx'},
@@ -2790,6 +2799,12 @@ function LessonsView({user,onManageAccess}){
   const [lockMsg,setLockMsg]=useState(false);
   const isT=user&&user.role==='teacher';
   const st=appSettings();
+  if(typeof SLIDES_HOSTED!=='undefined'&&!SLIDES_HOSTED) return (
+    <div className="p-main">
+      <div className="p-topbar"><div className="p-topbar-title">📊 Lessons</div></div>
+      <div className="p-page"><div style={{background:'#FFF3E0',border:'2px solid #d97706',borderRadius:12,padding:'18px 20px',fontSize:15,lineHeight:1.5}}>📊 The lesson slides are being set up and will appear here soon. Everything else in the app is ready to use.</div></div>
+    </div>
+  );
   if(openL) return (
     <div className="p-main">
       <div className="p-topbar" style={{gap:10}}>
