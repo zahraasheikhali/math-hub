@@ -1,0 +1,6 @@
+name = "math-hub"
+compatibility_date = "2024-11-01"
+
+[assets]
+directory = "./"
+not_found_handling = "single-page-application"
