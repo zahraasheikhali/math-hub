@@ -498,6 +498,7 @@
 
 <script type="text/babel">
 const { useState, useEffect, useMemo, useRef } = React;
+try{ if(window.pdfjsLib&&pdfjsLib.GlobalWorkerOptions) pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js'; }catch(e){}
 
 /* ═══════════ HELPERS ═══════════ */
 function uid() { return Math.random().toString(36).slice(2,10); }
@@ -535,7 +536,7 @@ const KEYS = ['groups','students','messages','submissions','assignments','posts'
 const FILE_FIELDS = { assignments:['fileData','correctionData'], submissions:['fileData','correctedFileData'], meetings:['attachmentData'] };
 const CHUNK = 700000; /* base64 chars per file-chunk doc, safely under Firestore's 1MB limit */
 const CLOUD_ON = !!FIREBASE_CONFIG.projectId && !FIREBASE_CONFIG.projectId.includes('PASTE');
-const APP_VERSION = 'v10.1';
+const APP_VERSION = 'v10.2';
 
 /* Visible sync-status badge (helps confirm what's actually happening when saving). */
 let _syncBusy=0, _syncErr='';
@@ -1545,8 +1546,10 @@ function FullReviewPage({assignId,group,tick,refresh}) {
       <div style={{fontSize:12,opacity:0.6,marginBottom:12}}>📎 {vName}{vsub.submittedAt?(' · '+fmtDate(vsub.submittedAt)):''}</div>
       {vData&&vData.startsWith('data:image')?
         <img src={vData} alt="file" style={{maxWidth:'100%',border:'2px solid var(--ink)',borderRadius:10}}/>:
+        vData&&isPdfData(vData,vName)?
+        <PdfView data={vData}/>:
         vData?<iframe src={vData} style={{width:'100%',height:'70vh',border:'2px solid var(--ink)',borderRadius:10}} title="file"/>:
-        <div className="empty-state">⏳ Loading file… if it doesn't appear, wait a moment and tap View again.</div>
+        <div className="empty-state">⏳ Loading file… if it stays blank, this file was uploaded before the fix and needs to be re-uploaded (correction) or re-submitted by the student.</div>
       }
       {vData&&<div style={{marginTop:10}}><a href={vData} download={vName} className="a-btn" style={{textDecoration:'none'}}>⬇ Download</a></div>}
     </div>
@@ -2864,9 +2867,54 @@ function LessonsView({user,onManageAccess}){
 }
 
 /* ═══════════ CORRECTION VIEWER (student: view inline + download) ═══════════ */
+/* ═══════════ PDF VIEWER (renders pages via PDF.js — works on phones) ═══════════ */
+function PdfView({data}){
+  const ref=useRef(null); const [err,setErr]=useState(''); const [busy,setBusy]=useState(true);
+  useEffect(()=>{
+    let cancelled=false;
+    (async()=>{
+      try{
+        setBusy(true); setErr('');
+        if(!data||!window.pdfjsLib){ setErr('PDF viewer not ready — use Download.'); setBusy(false); return; }
+        const b64=(data.split(',')[1])||''; const bin=atob(b64);
+        const bytes=new Uint8Array(bin.length); for(let i=0;i<bin.length;i++) bytes[i]=bin.charCodeAt(i);
+        const pdf=await pdfjsLib.getDocument({data:bytes}).promise;
+        if(cancelled) return;
+        const cont=ref.current; if(!cont) return; cont.innerHTML='';
+        const width=cont.clientWidth||700;
+        for(let p=1;p<=pdf.numPages;p++){
+          const page=await pdf.getPage(p); if(cancelled) return;
+          const base=page.getViewport({scale:1});
+          const scale=Math.max(0.3,Math.min(2.5,(width-6)/base.width));
+          const vp=page.getViewport({scale});
+          const canvas=document.createElement('canvas');
+          canvas.width=vp.width; canvas.height=vp.height;
+          canvas.style.cssText='width:100%;height:auto;margin-bottom:8px;border:1px solid #ddd;border-radius:6px;';
+          cont.appendChild(canvas);
+          await page.render({canvasContext:canvas.getContext('2d'),viewport:vp}).promise;
+          if(cancelled) return;
+        }
+        setBusy(false);
+      }catch(e){ if(!cancelled){ setErr('Could not display this PDF here — tap Download to open it.'); setBusy(false); } }
+    })();
+    return ()=>{ cancelled=true; };
+  },[data]);
+  return (
+    <div style={{marginTop:10}}>
+      {busy&&<div style={{fontSize:12,opacity:0.6,marginBottom:6}}>⏳ Rendering PDF…</div>}
+      <div ref={ref} style={{maxHeight:'75vh',overflowY:'auto',background:'#fff',border:'1px solid #ccc',borderRadius:8,padding:3}}/>
+      {err&&<div style={{fontSize:12,color:'#a11',marginTop:6}}>{err}</div>}
+    </div>
+  );
+}
+function isPdfData(data,name){ return (data&&data.startsWith('data:application/pdf'))||(name&&/\.pdf$/i.test(name)); }
+
 function CorrectionBox({name,data,label}){
   const [show,setShow]=useState(false);
+  const [slow,setSlow]=useState(false);
   const isImg=data&&data.startsWith('data:image');
+  const isPdf=isPdfData(data,name);
+  useEffect(()=>{ if(!data){ const t=setTimeout(()=>setSlow(true),9000); return ()=>clearTimeout(t); } setSlow(false); },[data]);
   return (
     <div style={{marginTop:8,padding:'10px 14px',background:'#DCEFE3',border:'2px solid #22c55e',borderRadius:10}}>
       <div style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
@@ -2874,11 +2922,15 @@ function CorrectionBox({name,data,label}){
         {data?(<>
           <button className="a-btn" onClick={()=>setShow(s=>!s)} style={{fontSize:11,padding:'4px 10px'}}>{show?'✕ Hide':'👁 View'}</button>
           <a href={data} download={name} target="_blank" rel="noreferrer" className="a-btn" style={{textDecoration:'none',fontSize:11,padding:'4px 10px',background:'#1F6B43',color:'white',borderColor:'#1F6B43'}}>⬇ Download</a>
-        </>):(<span style={{fontSize:11,opacity:0.7}}>⏳ Loading…</span>)}
+        </>):(slow
+          ? <span style={{fontSize:11,color:'#b45309'}}>⚠ This file couldn't load — it may need to be uploaded again.</span>
+          : <span style={{fontSize:11,opacity:0.7}}>⏳ Loading…</span>)}
       </div>
       {show&&data&&(isImg
-        ? <img src={data} alt="correction" style={{maxWidth:'100%',marginTop:10,borderRadius:8,border:'1px solid #22c55e'}}/>
-        : <iframe src={data} style={{width:'100%',height:'70vh',marginTop:10,border:'1px solid #22c55e',borderRadius:8,background:'#fff'}} title="correction"/>)}
+        ? <img src={data} alt="file" style={{maxWidth:'100%',marginTop:10,borderRadius:8,border:'1px solid #22c55e'}}/>
+        : isPdf
+        ? <PdfView data={data}/>
+        : <iframe src={data} style={{width:'100%',height:'70vh',marginTop:10,border:'1px solid #22c55e',borderRadius:8,background:'#fff'}} title="file"/>)}
     </div>
   );
 }
