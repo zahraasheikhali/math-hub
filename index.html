@@ -536,7 +536,7 @@ const KEYS = ['groups','students','messages','submissions','assignments','posts'
 const FILE_FIELDS = { assignments:['fileData','correctionData'], submissions:['fileData','correctedFileData'], meetings:['attachmentData'] };
 const CHUNK = 700000; /* base64 chars per file-chunk doc, safely under Firestore's 1MB limit */
 const CLOUD_ON = !!FIREBASE_CONFIG.projectId && !FIREBASE_CONFIG.projectId.includes('PASTE');
-const APP_VERSION = 'v10.2';
+const APP_VERSION = 'v10.3';
 
 /* Visible sync-status badge (helps confirm what's actually happening when saving). */
 let _syncBusy=0, _syncErr='';
@@ -1671,8 +1671,8 @@ function AssignView({type,groupId,user,onModal,tick,refresh,onReview}) {
                   Total marks: <strong>{a.totalMark}</strong>
                   {a.dueDate&&<> · Due: <strong>{fmtDate(new Date(a.dueDate).getTime())}</strong></>}
                 </div>
-                {a.fileName&&<div style={{fontSize:12,marginBottom:4}}>📎 {a.fileName}</div>}
-                {a.description&&<div style={{fontSize:13,opacity:0.75}}>{a.description}</div>}
+                {a.fileName&&<CorrectionBox name={a.fileName} data={a.fileData} label="Worksheet"/>}
+                {a.description&&<div style={{fontSize:13,opacity:0.75,marginTop:4}}>{a.description}</div>}
               </div>
               {isT&&(
                 <div className="a-acts">
