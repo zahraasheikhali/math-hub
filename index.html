@@ -535,7 +535,7 @@ const KEYS = ['groups','students','messages','submissions','assignments','posts'
 const FILE_FIELDS = { assignments:['fileData','correctionData'], submissions:['fileData','correctedFileData'], meetings:['attachmentData'] };
 const CHUNK = 700000; /* base64 chars per file-chunk doc, safely under Firestore's 1MB limit */
 const CLOUD_ON = !!FIREBASE_CONFIG.projectId && !FIREBASE_CONFIG.projectId.includes('PASTE');
-const APP_VERSION = 'v10.0';
+const APP_VERSION = 'v10.1';
 
 /* Visible sync-status badge (helps confirm what's actually happening when saving). */
 let _syncBusy=0, _syncErr='';
@@ -699,11 +699,15 @@ async function _writeItem(k,item){
   for(const f of fileFields){
     const mapKey=k+':'+item.id+':'+f;
     const val=item[f];
+    const prevDoc=_shadow[k][item.id] && _shadow[k][item.id][f];  /* what's currently in the cloud */
     if(typeof val==='string' && val.startsWith('data:')){
       const prevFid=_fieldFileId[mapKey];
       if(prevFid && _fileBlobs[prevFid]===val){ base[f]={__fileId:prevFid}; }
       else { base[f]=null; uploads.push({f,val,mapKey}); } /* defer the heavy file */
     } else if(val && typeof val==='object' && val.__fileId){ base[f]=val; }
+    else if((val===''||val==null) && prevDoc && typeof prevDoc==='object' && prevDoc.__fileId){
+      base[f]=prevDoc;  /* file not downloaded on this device yet → KEEP the existing file, don't wipe it */
+    }
     else { base[f]=(val===undefined?null:val); }
   }
   const cleaned=_clean(base);
