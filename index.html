@@ -536,7 +536,7 @@ const KEYS = ['groups','students','messages','submissions','assignments','posts'
 const FILE_FIELDS = { assignments:['fileData','correctionData'], submissions:['fileData','correctedFileData'], meetings:['attachmentData'] };
 const CHUNK = 700000; /* base64 chars per file-chunk doc, safely under Firestore's 1MB limit */
 const CLOUD_ON = !!FIREBASE_CONFIG.projectId && !FIREBASE_CONFIG.projectId.includes('PASTE');
-const APP_VERSION = 'v10.3';
+const APP_VERSION = 'v10.4';
 
 /* Visible sync-status badge (helps confirm what's actually happening when saving). */
 let _syncBusy=0, _syncErr='';
@@ -2745,6 +2745,11 @@ function ParentPortal({user,onLogout}){
 
 /* ═══════════ LESSONS (PowerPoint slide decks, shown as PDF) ═══════════ */
 const SLIDES_HOSTED = true;  /* full build: slides bundled. Lite build sets this false. */
+/* Cache-buster for Microsoft's Office viewer. Microsoft caches a slide URL for
+   ~24h INCLUDING failures, so after the slides were deleted it kept serving the
+   old "can't open this presentation" error. Bump this number by 1 and re-deploy
+   any time you replace or re-upload files in /slides/ — it forces a fresh fetch. */
+const SLIDES_VER = 11;
 const LESSONS=[
   {n:1,t:'Expanding Brackets',f:'1__Expanding_Brackets.pptx'},
   {n:2,t:'Prime Factors, LCM & HCF',f:'2__Prime_Factors__LCM__HCF_.pptx'},
@@ -2804,6 +2809,8 @@ const LESSONS=[
 function LessonsView({user,onManageAccess}){
   const [openL,setOpenL]=useState(null);
   const [lockMsg,setLockMsg]=useState(false);
+  const [viewerKey,setViewerKey]=useState(0);
+  const [diag,setDiag]=useState(null);
   const isT=user&&user.role==='teacher';
   const st=appSettings();
   if(typeof SLIDES_HOSTED!=='undefined'&&!SLIDES_HOSTED) return (
@@ -2812,18 +2819,43 @@ function LessonsView({user,onManageAccess}){
       <div className="p-page"><div style={{background:'#FFF3E0',border:'2px solid #d97706',borderRadius:12,padding:'18px 20px',fontSize:15,lineHeight:1.5}}>📊 The lesson slides are being set up and will appear here soon. Everything else in the app is ready to use.</div></div>
     </div>
   );
-  if(openL) return (
+  if(openL){
+    /* Direct link to the .pptx on our own site. The ?v= cache-buster makes
+       Microsoft (and the browser) fetch a fresh copy instead of a stale error. */
+    const slideUrl = window.location.origin + '/slides/' + openL.f + '?v=' + SLIDES_VER;
+    const msViewer = 'https://view.officeapps.live.com/op/embed.aspx?src=' + encodeURIComponent(slideUrl);
+    /* Teacher-only check: is Cloudflare actually serving this file? */
+    const runDiag = async () => {
+      setDiag('Checking…');
+      try{
+        const r = await fetch(slideUrl, {cache:'no-store'});
+        const ct = r.headers.get('content-type') || '(none)';
+        const len = r.headers.get('content-length');
+        if(!r.ok){ setDiag('❌ HTTP '+r.status+' — the file is NOT on the live site. Re-upload /slides/ via GitHub Desktop and push.'); return; }
+        if(/text\/html/i.test(ct)){ setDiag('❌ The site returned a web page instead of the PowerPoint. Cloudflare is not serving /slides/ — check the last deploy finished.'); return; }
+        const kb = len ? Math.round(Number(len)/1024)+' KB' : 'unknown size';
+        setDiag('✅ File is live — '+r.status+', '+kb+', type: '+ct+'. If the viewer still fails, it is Microsoft caching: bump SLIDES_VER and re-deploy.');
+      }catch(e){ setDiag('❌ Could not reach the file: '+e.message); }
+    };
+    return (
     <div className="p-main">
       <div className="p-topbar" style={{gap:10}}>
-        <button className="a-btn" onClick={()=>setOpenL(null)}>← Lessons</button>
+        <button className="a-btn" onClick={()=>{setOpenL(null);setDiag(null);}}>← Lessons</button>
         <div className="p-topbar-title" style={{flex:1}}>{openL.n}. {openL.t}</div>
       </div>
       <div className="p-page">
-        <iframe src={'https://view.officeapps.live.com/op/embed.aspx?src='+encodeURIComponent(window.location.origin+'/slides/'+openL.f)} style={{width:'100%',height:'78vh',border:'2px solid var(--ink)',borderRadius:10,background:'#fff'}} title={openL.t} allowFullScreen/>
-        <div style={{fontSize:12,opacity:0.6,marginTop:8}}>This is the live PowerPoint — use the arrows to move through the slides, or the ⛶ button for full screen.</div>
+        <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:10}}>
+          <a className="a-btn" href={slideUrl} download={openL.f} style={{textDecoration:'none'}}>⬇️ Download &amp; present in PowerPoint</a>
+          <a className="a-btn" href={msViewer} target="_blank" rel="noopener noreferrer" style={{textDecoration:'none'}}>↗️ Open viewer in a new tab</a>
+          <button className="a-btn" onClick={()=>setViewerKey(k=>k+1)}>🔄 Reload viewer</button>
+          {isT && <button className="a-btn" onClick={runDiag}>🔎 Check slide file</button>}
+        </div>
+        {diag && <div style={{background:'#F4F7F5',border:'2px solid var(--ink)',borderRadius:10,padding:'10px 14px',marginBottom:10,fontSize:13,lineHeight:1.5,wordBreak:'break-word'}}>{diag}</div>}
+        <iframe key={viewerKey} src={msViewer} style={{width:'100%',height:'78vh',border:'2px solid var(--ink)',borderRadius:10,background:'#fff'}} title={openL.t} allowFullScreen/>
+        <div style={{fontSize:12,opacity:0.6,marginTop:8}}>This is the live PowerPoint — use the arrows to move through the slides, or the ⛶ button for full screen. If the viewer shows an error, use <b>Download &amp; present in PowerPoint</b> — that always works and keeps all animations.</div>
       </div>
     </div>
-  );
+  );}
   return (
     <div className="p-main">
       <div className="p-topbar" style={{gap:8,flexWrap:'wrap'}}><div className="p-topbar-title">📊 Lessons</div>
