@@ -536,7 +536,7 @@ const KEYS = ['groups','students','messages','submissions','assignments','posts'
 const FILE_FIELDS = { assignments:['fileData','correctionData'], submissions:['fileData','correctedFileData'], meetings:['attachmentData'] };
 const CHUNK = 700000; /* base64 chars per file-chunk doc, safely under Firestore's 1MB limit */
 const CLOUD_ON = !!FIREBASE_CONFIG.projectId && !FIREBASE_CONFIG.projectId.includes('PASTE');
-const APP_VERSION = 'v10.4';
+const APP_VERSION = 'v10.5';
 
 /* Visible sync-status badge (helps confirm what's actually happening when saving). */
 let _syncBusy=0, _syncErr='';
@@ -2749,7 +2749,7 @@ const SLIDES_HOSTED = true;  /* full build: slides bundled. Lite build sets this
    ~24h INCLUDING failures, so after the slides were deleted it kept serving the
    old "can't open this presentation" error. Bump this number by 1 and re-deploy
    any time you replace or re-upload files in /slides/ — it forces a fresh fetch. */
-const SLIDES_VER = 11;
+const SLIDES_VER = 12;
 const LESSONS=[
   {n:1,t:'Expanding Brackets',f:'1__Expanding_Brackets.pptx'},
   {n:2,t:'Prime Factors, LCM & HCF',f:'2__Prime_Factors__LCM__HCF_.pptx'},
@@ -2805,6 +2805,10 @@ const LESSONS=[
   {n:52,t:'Venn Diagrams & Sets',f:'52__Venn_Diagrams___Sets.pptx'},
   {n:53,t:'Averages',f:'53__Averages.pptx'},
   {n:54,t:'Frequency Tables',f:'54__Frequency_Tables.pptx'},
+  {n:55,t:'Cumulative Frequency',f:'55__Cumulative_Frequency.pptx'},
+  {n:56,t:'Histograms',f:'56__Histograms.pptx'},
+  {n:57,t:'Probability',f:'57__Probability.pptx'},
+  {n:58,t:'Tree Probability',f:'58__Tree_Probability.pptx'},
 ];
 function LessonsView({user,onManageAccess}){
   const [openL,setOpenL]=useState(null);
@@ -2822,7 +2826,7 @@ function LessonsView({user,onManageAccess}){
   if(openL){
     /* Direct link to the .pptx on our own site. The ?v= cache-buster makes
        Microsoft (and the browser) fetch a fresh copy instead of a stale error. */
-    const slideUrl = window.location.origin + '/slides/' + openL.f + '?v=' + SLIDES_VER;
+    const slideUrl = window.location.origin + '/slides/' + encodeURIComponent(openL.f) + '?v=' + SLIDES_VER;
     const msViewer = 'https://view.officeapps.live.com/op/embed.aspx?src=' + encodeURIComponent(slideUrl);
     /* Teacher-only check: is Cloudflare actually serving this file? */
     const runDiag = async () => {
