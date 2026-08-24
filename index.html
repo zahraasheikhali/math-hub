@@ -494,6 +494,17 @@
     .chat-ir input { font-size: 16px; padding: 13px 14px; }   /* 16px stops iPhone auto-zoom */
     .chat-send { flex-shrink: 0; min-width: 88px; padding: 13px 18px; font-size: 15px; }
   }
+/* Word document rendered inline (.docx via mammoth) */
+.docx-view{margin-top:10px;max-height:75vh;overflow-y:auto;background:#fff;border:1px solid #ccc;border-radius:8px;padding:20px 24px;font-family:Georgia,'Times New Roman',serif;font-size:15px;line-height:1.6;color:#111;}
+.docx-view p{margin:0 0 10px;}
+.docx-view h1,.docx-view h2,.docx-view h3,.docx-view h4{margin:16px 0 8px;line-height:1.3;}
+.docx-view h1{font-size:22px;} .docx-view h2{font-size:19px;} .docx-view h3{font-size:17px;}
+.docx-view ul,.docx-view ol{margin:0 0 10px 22px;}
+.docx-view li{margin-bottom:4px;}
+.docx-view img{max-width:100%;height:auto;}
+.docx-view table{border-collapse:collapse;margin:10px 0;max-width:100%;}
+.docx-view td,.docx-view th{border:1px solid #bbb;padding:6px 9px;vertical-align:top;}
+.docx-view a{color:#1F6B43;}
 </style>
 
 <script type="text/babel">
@@ -506,6 +517,22 @@ function now() { return Date.now(); }
 function fmtDate(ts) { return new Date(ts).toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'}); }
 function initials(n) { return (n||'?').split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase(); }
 function isLate(due,subAt) { if(!due||!subAt) return false; const end=new Date(due+'T23:59:59').getTime(); return !isNaN(end) ? subAt>end : subAt>new Date(due).getTime(); }
+/* Due-date display for a student's own row: the date plus how it's going. */
+function fmtDue(due){ if(!due) return '—'; const d=new Date(due+'T00:00:00'); return isNaN(d.getTime())?due:d.toLocaleDateString('en-GB',{day:'2-digit',month:'short'}); }
+function dueNote(due,sub){
+  if(!due) return null;
+  const end=new Date(due+'T23:59:59').getTime();
+  if(isNaN(end)) return null;
+  if(sub) return isLate(due,sub.submittedAt)?{txt:'handed in late',tone:'#b45309'}:null;
+  const today=new Date(); today.setHours(0,0,0,0);
+  const dayMs=86400000;
+  const days=Math.round((new Date(due+'T00:00:00').getTime()-today.getTime())/dayMs);
+  if(days<0)  return {txt:(days===-1?'1 day overdue':(-days)+' days overdue'),tone:'#b91c1c'};
+  if(days===0) return {txt:'due today',tone:'#b45309'};
+  if(days===1) return {txt:'due tomorrow',tone:'#b45309'};
+  if(days<=7) return {txt:'in '+days+' days',tone:'#1F6B43'};
+  return null;
+}
 
 /* ═══════════ PORTAL DATA ═══════════ */
 const TEACHER_EMAIL = 'azl@eduspace.com';
@@ -533,7 +560,7 @@ const FIREBASE_CONFIG = {
 
 const KEYS = ['groups','students','messages','submissions','assignments','posts','meetings','parents','recordings','sessions','settings'];
 /* fields that may hold a large uploaded file (base64) — stored separately so docs stay small */
-const FILE_FIELDS = { assignments:['fileData','correctionData'], submissions:['fileData','correctedFileData'], meetings:['attachmentData'] };
+const FILE_FIELDS = { assignments:['fileData','correctionData'], submissions:['fileData','correctedFileData'], meetings:['attachmentData'], messages:['fileData'] };
 const CHUNK = 700000; /* base64 chars per file-chunk doc, safely under Firestore's 1MB limit */
 const CLOUD_ON = !!FIREBASE_CONFIG.projectId && !FIREBASE_CONFIG.projectId.includes('PASTE');
 const APP_VERSION = 'v10.5';
@@ -1147,6 +1174,7 @@ function PortalApp({user,onLogout,topics,progress,toggleDone,addQuestion,deleteQ
   const [ebookLevelFilter,setEbookLevelFilter]=useState('All');
   const [openQ,setOpenQ]=useState(null);
   const [reviewAssignId,setReviewAssignId]=useState(null);
+  const [detailStudentId,setDetailStudentId]=useState(null);   /* full-page student report */
   const [liveMeeting,setLiveMeeting]=useState(null);
   const [assignStudentId,setAssignStudentId]=useState(null);
 
@@ -1328,6 +1356,23 @@ function PortalApp({user,onLogout,topics,progress,toggleDone,addQuestion,deleteQ
     const group=DB.groups().find(g=>g.id===groupId);
     if(!group) return <div className="p-main"><div className="p-topbar"><div className="p-topbar-title">Group not found</div></div></div>;
 
+    // Full-page student report (was a cramped modal — a year of assignments needs a page)
+    if(detailStudentId){
+      const stu=DB.students().find(x=>x.id===detailStudentId);
+      if(!stu){ setDetailStudentId(null); return null; }
+      return (
+        <div className="p-main">
+          <div className="p-topbar" style={{flexWrap:'wrap',gap:8}}>
+            <button className="a-btn" onClick={()=>setDetailStudentId(null)}>← Back to Track</button>
+            <div className="p-topbar-title" style={{flex:1}}>📊 {stu.name}</div>
+          </div>
+          <div className="p-page">
+            <StudentDetail studentId={detailStudentId} groupId={groupId} fullPage/>
+          </div>
+        </div>
+      );
+    }
+
     // Full-page review mode
     if(reviewAssignId){
       const assignment=DB.assignments().find(a=>a.id===reviewAssignId);
@@ -1357,12 +1402,12 @@ function PortalApp({user,onLogout,topics,progress,toggleDone,addQuestion,deleteQ
             {isT&&<button className="a-btn" onClick={()=>renameGroup(group)} style={{fontSize:11,padding:'4px 9px'}}>✏️ Rename</button>}
             {isT&&<button className="a-btn danger" onClick={()=>deleteGroup(group.id)} style={{fontSize:11,padding:'4px 9px'}}>🗑 Delete</button>}
           </div>
-          <div className="p-tabs">{tabs.map(t=><button key={t} className={"p-tab "+(subView===t?'active':'')} onClick={()=>{setSubView(t);setReviewAssignId(null);}}>{lbls[t]}</button>)}</div>
+          <div className="p-tabs">{tabs.map(t=><button key={t} className={"p-tab "+(subView===t?'active':'')} onClick={()=>{setSubView(t);setReviewAssignId(null);setDetailStudentId(null);}}>{lbls[t]}</button>)}</div>
         </div>
         <div className="p-page">
           {subView==='homework'&&<AssignView type="homework" groupId={groupId} user={user} onModal={setModal} tick={tick} refresh={refresh} onReview={setReviewAssignId}/>}
           {subView==='mock'&&<AssignView type="mock" groupId={groupId} user={user} onModal={setModal} tick={tick} refresh={refresh} onReview={setReviewAssignId}/>}
-          {subView==='track'&&<TrackView groupId={groupId} user={user} onModal={setModal} tick={tick}/>}
+          {subView==='track'&&<TrackView groupId={groupId} user={user} onModal={setModal} onDetail={setDetailStudentId} tick={tick}/>}
           {subView==='members'&&isT&&(
             <div>
               <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12,flexWrap:'wrap',gap:8}}>
@@ -1734,7 +1779,7 @@ function AssignView({type,groupId,user,onModal,tick,refresh,onReview}) {
 }
 
 /* ═══════════ TRACK VIEW ═══════════ */
-function TrackView({groupId,user,onModal,tick}) {
+function TrackView({groupId,user,onModal,onDetail,tick}) {
   const isT=user.role==='teacher';
   const group=DB.groups().find(g=>g.id===groupId);
   const studs=DB.students().filter(s=>(group.students||[]).includes(s.id));
@@ -1742,7 +1787,13 @@ function TrackView({groupId,user,onModal,tick}) {
   const subs=DB.submissions();
   if(isT) return (
     <div>
-      <div style={{fontFamily:'Georgia,serif',fontWeight:700,fontSize:17,color:'var(--green-deep)',marginBottom:16}}>Student progress</div>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:10,flexWrap:'wrap',marginBottom:16}}>
+        <div style={{fontFamily:'Georgia,serif',fontWeight:700,fontSize:17,color:'var(--green-deep)'}}>Student progress</div>
+        {studs.length>0&&<ExcelBtn
+          label="⬇ Download class results (Excel)"
+          build={()=>classSheets(group?group.name:'Class',studs,assigns,subs.filter(x=>assigns.find(a=>a.id===x.assignmentId)))}
+          fileName={()=>safeFileName((group?group.name:'class')+'_results_'+todayStamp())+'.xlsx'}/>}
+      </div>
       {studs.length===0&&<div className="empty-state">No students in this group yet.</div>}
       {studs.length>0&&(
         <table className="p-table">
@@ -1759,7 +1810,7 @@ function TrackView({groupId,user,onModal,tick}) {
               return <tr key={s.id}>
                 <td><strong>{s.name}</strong><br/><span style={{fontSize:12,opacity:0.6}}>{s.email}</span></td>
                 <td>{hwS.length}/{hw.length}</td><td>{mkS.length}/{mk.length}</td><td>{avg}</td>
-                <td><button className="a-btn" onClick={()=>onModal({type:'studentDetail',id:s.id,extra:groupId})}>📊 Details</button></td>
+                <td><button className="a-btn" onClick={()=>onDetail?onDetail(s.id):onModal({type:'studentDetail',id:s.id,extra:groupId})}>📊 Details</button></td>
               </tr>;
             })}
           </tbody>
@@ -1780,8 +1831,21 @@ function TrackView({groupId,user,onModal,tick}) {
       </div>
       {assigns.length===0&&<div className="empty-state">No assignments yet.</div>}
       {assigns.length>0&&<table className="p-table">
-        <thead><tr><th>Assignment</th><th>Type</th><th>Status</th><th>Mark</th></tr></thead>
-        <tbody>{assigns.map(a=>{const sub=mySubs.find(s=>s.assignmentId===a.id); return <tr key={a.id}><td>{a.title}</td><td><span className="pill pill-gray">{a.type}</span></td><td>{sub?<span className="pill pill-green">Submitted</span>:<span className="pill pill-amber">Pending</span>}</td><td>{sub&&sub.mark!==null&&sub.mark!==undefined?`${sub.mark}/${a.totalMark}`:'—'}</td></tr>;})}
+        <thead><tr><th>Assignment</th><th>Type</th><th>Due</th><th>Status</th><th>Mark</th></tr></thead>
+        <tbody>{assigns.map(a=>{
+          const sub=mySubs.find(s=>s.assignmentId===a.id);
+          const note=dueNote(a.dueDate,sub);
+          const late=sub&&isLate(a.dueDate,sub.submittedAt);
+          return <tr key={a.id}>
+            <td>{a.title}</td>
+            <td><span className="pill pill-gray">{a.type}</span></td>
+            <td>
+              <div style={{whiteSpace:'nowrap'}}>{fmtDue(a.dueDate)}</div>
+              {note&&<div style={{fontSize:11,fontWeight:700,color:note.tone,whiteSpace:'nowrap'}}>{note.txt}</div>}
+            </td>
+            <td>{sub?(late?<span className="pill pill-amber">Submitted late</span>:<span className="pill pill-green">Submitted</span>):<span className="pill pill-amber">Pending</span>}</td>
+            <td>{sub&&sub.mark!==null&&sub.mark!==undefined?`${sub.mark}/${a.totalMark}`:'—'}</td>
+          </tr>;})}
         </tbody>
       </table>}
     </div>
@@ -1789,29 +1853,97 @@ function TrackView({groupId,user,onModal,tick}) {
 }
 
 /* ═══════════ CHAT VIEW ═══════════ */
+/* ═══════════ CHAT ATTACHMENTS (photos, PDFs, Word — any chat) ═══════════ */
+const CHAT_ACCEPT='image/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt';
+const CHAT_MAX_MB=12;
+function useAttach(){
+  const [att,setAtt]=useState(null);          /* {name,data} waiting to be sent */
+  const [busy,setBusy]=useState(false);
+  const inputRef=useRef(null);
+  async function pick(e){
+    const f=e.target.files&&e.target.files[0]; e.target.value='';
+    if(!f) return;
+    if(f.size>CHAT_MAX_MB*1024*1024){ alert('That file is too big. Please keep attachments under '+CHAT_MAX_MB+' MB.'); return; }
+    setBusy(true);
+    const d=await readUpload(f);             /* photos shrink automatically */
+    setBusy(false);
+    if(d) setAtt({name:f.name,data:d}); else alert('Could not read that file.');
+  }
+  return {att,setAtt,busy,inputRef,pick};
+}
+/* Downloads a workbook, with a spinner and a real error message if it fails. */
+function ExcelBtn({label,build,fileName,style}){
+  const [busy,setBusy]=useState(false);
+  return <button className="a-btn" disabled={busy} style={Object.assign({background:'#1F6B43',color:'#fff',borderColor:'#1F6B43'},style||{})}
+    onClick={async()=>{
+      setBusy(true);
+      try{ await downloadWorkbook(build(),fileName()); }
+      catch(e){ alert('Could not build the Excel file. Check your internet connection and try again.'); }
+      setBusy(false);
+    }}>{busy?'⏳ Preparing…':(label||'⬇ Excel')}</button>;
+}
+
+function AttachBtn({a}){
+  return (<>
+    <input ref={a.inputRef} type="file" accept={CHAT_ACCEPT} style={{display:'none'}} onChange={a.pick}/>
+    <button className="chat-send" title="Attach a photo or file"
+      onClick={()=>a.inputRef.current&&a.inputRef.current.click()}
+      style={{background:'transparent',color:'var(--ink)',borderColor:'var(--ink)',padding:'0 12px'}}>{a.busy?'⏳':'📎'}</button>
+  </>);
+}
+function AttachBar({a}){
+  if(!a.att) return null;
+  return (
+    <div style={{display:'flex',alignItems:'center',gap:8,padding:'6px 12px',background:'#DCEFE3',borderTop:'2px solid var(--ink)',fontSize:12}}>
+      <span style={{flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>📎 {a.att.name}</span>
+      <button className="a-btn" style={{fontSize:11,padding:'2px 8px'}} onClick={()=>a.setAtt(null)}>✕ Remove</button>
+    </div>
+  );
+}
+/* An attachment shown inside a chat bubble. */
+function MsgFile({m}){
+  const [open,setOpen]=useState(false);
+  if(!m.fileName||!hasFile(m,'fileData')) return null;
+  const isImg=/\.(png|jpe?g|gif|webp|bmp|heic|heif)$/i.test(m.fileName);
+  return (
+    <div style={{marginTop:m.text?6:0}}>
+      <div style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}}>
+        <button className="a-btn" style={{fontSize:11,padding:'3px 8px'}} onClick={()=>setOpen(o=>!o)}>
+          {open?'✕ Hide':(isImg?'🖼 View photo':'📎 '+m.fileName)}
+        </button>
+        <DownloadBtn data={m.fileData} fileId={m.fileDataId} name={m.fileName} style={{fontSize:11,padding:'3px 8px'}}/>
+      </div>
+      {open&&<div style={{marginTop:6}}><FileView data={m.fileData} name={m.fileName} fileId={m.fileDataId}/></div>}
+    </div>
+  );
+}
+
 function ChatView({groupId,user,chatTarget,setChatTarget,tick,refresh}) {
   const isT=user.role==='teacher';
   const group=DB.groups().find(g=>g.id===groupId);
   const studs=DB.students().filter(s=>(group.students||[]).includes(s.id));
   const allMsgs=DB.messages().filter(m=>m.groupId===groupId);
   const [msg,setMsg]=useState('');
+  const att=useAttach();
   const ALL_TARGET='__all__';
   const target=chatTarget||ALL_TARGET;
   function send(){
-    if(!msg.trim())return;
+    const body=msg.trim();
+    if(!body&&!att.att)return;                       /* a file on its own is fine */
+    const file=att.att?{fileName:att.att.name,fileData:att.att.data}:{};
     const msgs=DB.messages();
     if(isT){
       if(target===ALL_TARGET){
         // Broadcast to all students
-        msgs.push({id:uid(),groupId,from:'teacher',to:ALL_TARGET,text:msg.trim(),at:now(),broadcast:true});
+        msgs.push(Object.assign({id:uid(),groupId,from:'teacher',to:ALL_TARGET,text:body,at:now(),broadcast:true},file));
       } else {
-        msgs.push({id:uid(),groupId,from:'teacher',to:target,text:msg.trim(),at:now()});
+        msgs.push(Object.assign({id:uid(),groupId,from:'teacher',to:target,text:body,at:now()},file));
       }
     } else {
-      msgs.push({id:uid(),groupId,from:user.id,to:'teacher',text:msg.trim(),at:now()});
+      msgs.push(Object.assign({id:uid(),groupId,from:user.id,to:'teacher',text:body,at:now()},file));
     }
     DB.save.messages(msgs);
-    setMsg(''); refresh();
+    setMsg(''); att.setAtt(null); refresh();
   }
   if(isT){
     let conv;
@@ -1838,8 +1970,9 @@ function ChatView({groupId,user,chatTarget,setChatTarget,tick,refresh}) {
         </div>
         <div className="chat-body">
           <div className="chat-hd">{target===ALL_TARGET?'📢 Broadcast to all students':'Chat with '+(studs.find(s=>s.id===target)||{name:'Student'}).name}</div>
-          <div className="chat-list" id="chat-list-el">{conv.map(m=><div key={m.id} className={"msg "+(m.from==='teacher'?'mine':'')}><div className={"msg-bubble "+(m.from==='teacher'?'mine':'other')}>{m.broadcast&&<div style={{fontSize:10,opacity:0.6,marginBottom:2}}>📢 Broadcast</div>}{m.text}</div></div>)}</div>
-          <div className="chat-ir"><input value={msg} onChange={e=>setMsg(e.target.value)} onKeyDown={e=>e.key==='Enter'&&send()} placeholder={target===ALL_TARGET?'Broadcast to all students…':'Type a message…'}/><button className="chat-send" onClick={send}>Send</button></div>
+          <div className="chat-list" id="chat-list-el">{conv.map(m=><div key={m.id} className={"msg "+(m.from==='teacher'?'mine':'')}><div className={"msg-bubble "+(m.from==='teacher'?'mine':'other')}>{m.broadcast&&<div style={{fontSize:10,opacity:0.6,marginBottom:2}}>📢 Broadcast</div>}{m.text}<MsgFile m={m}/></div></div>)}</div>
+          <AttachBar a={att}/>
+          <div className="chat-ir"><AttachBtn a={att}/><input value={msg} onChange={e=>setMsg(e.target.value)} onKeyDown={e=>e.key==='Enter'&&send()} placeholder={target===ALL_TARGET?'Broadcast to all students…':'Type a message…'}/><button className="chat-send" onClick={send}>Send</button></div>
         </div>
       </div>
     );
@@ -1872,11 +2005,12 @@ function ChatView({groupId,user,chatTarget,setChatTarget,tick,refresh}) {
             <div className={"msg-bubble "+(isMine?'mine':'other')}>
               {m.broadcast&&<div style={{fontSize:10,opacity:0.6,marginBottom:2}}>📢 Teacher</div>}
               {m.text}
+              <MsgFile m={m}/>
             </div>
           </div>;
         })}</div>
         {stuChatTab==='teacher'?(
-          <div className="chat-ir"><input value={msg} onChange={e=>setMsg(e.target.value)} onKeyDown={e=>e.key==='Enter'&&send()} placeholder="Message teacher…"/><button className="chat-send" onClick={send}>Send</button></div>
+          <><AttachBar a={att}/><div className="chat-ir"><AttachBtn a={att}/><input value={msg} onChange={e=>setMsg(e.target.value)} onKeyDown={e=>e.key==='Enter'&&send()} placeholder="Message teacher…"/><button className="chat-send" onClick={send}>Send</button></div></>
         ):(
           <div style={{padding:'12px 14px',borderTop:'2px solid var(--ink)',fontSize:13,opacity:0.6,textAlign:'center'}}>Only your teacher can post announcements</div>
         )}
@@ -2096,9 +2230,12 @@ function CorrectionForm({assignId,onDone}) {
   );
 }
 
-function StudentDetail({studentId,groupId}) {
+function StudentDetail({studentId,groupId,fullPage}) {
   const stu=DB.students().find(s=>s.id===studentId);
   const assigns=DB.assignments().filter(a=>a.groupId===groupId);
+  const [kind,setKind]=useState('all');     /* all | homework | mock */
+  const [state,setState]=useState('all');   /* all | marked | unmarked | missing */
+  const [q,setQ]=useState('');
   const mySubs=DB.submissions().filter(s=>s.studentId===studentId&&assigns.find(a=>a.id===s.assignmentId));
   const marked=mySubs.filter(s=>s.mark!==null&&s.mark!==undefined);
   const totPoss=marked.reduce((sum,sub)=>{const a=assigns.find(x=>x.id===sub.assignmentId);return sum+(a?a.totalMark:0);},0);
@@ -2108,7 +2245,13 @@ function StudentDetail({studentId,groupId}) {
   function buildPie(done,notDone){ const total=done+notDone; if(total===0)return`<circle cx="80" cy="80" r="60" fill="#D3D1C7"/>`; if(notDone===0)return`<circle cx="80" cy="80" r="60" fill="#16261F"/>`; if(done===0)return`<circle cx="80" cy="80" r="60" fill="#D3D1C7"/>`; const pct=done/total,angle=pct*2*Math.PI,x=80+60*Math.sin(angle),y=80-60*Math.cos(angle),large=pct>.5?1:0; return`<circle cx="80" cy="80" r="60" fill="#D3D1C7"/><path d="M80,80 L80,20 A60,60 0 ${large},1 ${x},${y} Z" fill="#16261F"/><circle cx="80" cy="80" r="36" fill="#F7F4EC"/><text x="80" y="85" text-anchor="middle" font-size="16" font-weight="700" fill="#16261F">${Math.round(pct*100)}%</text>`; }
   return (
     <>
-      <div style={{fontWeight:700,fontSize:15,marginBottom:14}}>{stu?.name}</div>
+      {!fullPage&&<div style={{fontWeight:700,fontSize:15,marginBottom:14}}>{stu?.name}</div>}
+      <div style={{display:'flex',justifyContent:'flex-end',marginBottom:12}}>
+        <ExcelBtn
+          label={'⬇ Download '+((stu&&stu.name)?stu.name.split(' ')[0]+"'s":'these')+' results (Excel)'}
+          build={()=>[studentSheet(stu,assigns,mySubs,(DB.groups().find(g=>g.id===groupId)||{}).name)]}
+          fileName={()=>safeFileName((stu&&stu.name?stu.name:'student')+'_results_'+todayStamp())+'.xlsx'}/>
+      </div>
       <div className="p-stat-row" style={{marginBottom:16}}>
         <div className="p-stat"><div className="n">{done}/{total}</div><div className="l">Submitted</div></div>
         <div className="p-stat"><div className="n">{totGot}/{totPoss||'—'}</div><div className="l">Marks</div></div>
@@ -2119,9 +2262,63 @@ function StudentDetail({studentId,groupId}) {
         <span><span style={{display:'inline-block',width:10,height:10,borderRadius:2,background:'#16261F',marginRight:4}}></span>Done ({done})</span>
         <span><span style={{display:'inline-block',width:10,height:10,borderRadius:2,background:'#D3D1C7',marginRight:4}}></span>Pending ({notDone})</span>
       </div></>}
-      <table className="p-table"><thead><tr><th>Assignment</th><th>Submitted</th><th>Mark</th></tr></thead><tbody>
-        {assigns.map(a=>{const sub=mySubs.find(s=>s.assignmentId===a.id);return <tr key={a.id}><td>{a.title} <span className="pill pill-gray" style={{fontSize:10}}>{a.type}</span></td><td>{sub?<span className="pill pill-green">Yes</span>:<span className="pill pill-amber">No</span>}</td><td>{sub&&sub.mark!==null&&sub.mark!==undefined?`${sub.mark}/${a.totalMark}`:'—'}</td></tr>;})}
-      </tbody></table>
+      {(() => {
+        /* Newest first, then filtered — a full year of assignments needs narrowing down. */
+        const ordered=assigns.slice().sort((a,b)=>{
+          const ad=a.dueDate?new Date(a.dueDate+'T00:00:00').getTime():(a.createdAt||0);
+          const bd=b.dueDate?new Date(b.dueDate+'T00:00:00').getTime():(b.createdAt||0);
+          return bd-ad;
+        });
+        const rows=ordered.filter(a=>{
+          if(kind!=='all'&&a.type!==kind) return false;
+          const sub=mySubs.find(s=>s.assignmentId===a.id);
+          const has=sub&&sub.mark!=null&&sub.mark!==undefined;
+          if(state==='marked'&&!has) return false;
+          if(state==='unmarked'&&!(sub&&!has)) return false;
+          if(state==='missing'&&sub) return false;
+          if(q.trim()&&!a.title.toLowerCase().includes(q.trim().toLowerCase())) return false;
+          return true;
+        });
+        const chip=(cur,set,val,label)=>(
+          <button key={val} className="a-btn" onClick={()=>set(val)}
+            style={{fontSize:11,padding:'4px 10px',background:cur===val?'var(--green-deep)':'',color:cur===val?'#fff':'',borderColor:cur===val?'var(--green-deep)':''}}>{label}</button>);
+        return (<>
+          <div style={{display:'flex',gap:6,flexWrap:'wrap',alignItems:'center',marginBottom:10}}>
+            {chip(kind,setKind,'all','All')}
+            {chip(kind,setKind,'homework','Homework')}
+            {chip(kind,setKind,'mock','Mocks')}
+            <span style={{width:1,height:20,background:'#ccc',margin:'0 4px'}}/>
+            {chip(state,setState,'all','Any status')}
+            {chip(state,setState,'marked','Marked')}
+            {chip(state,setState,'unmarked','Awaiting mark')}
+            {chip(state,setState,'missing','Not done')}
+            <input value={q} onChange={e=>setQ(e.target.value)} placeholder="Search title…"
+              style={{flex:'1 1 140px',minWidth:120,padding:'5px 10px',border:'2px solid var(--ink)',borderRadius:7,fontSize:12,fontFamily:'inherit'}}/>
+          </div>
+          <div style={{fontSize:12,opacity:0.65,marginBottom:6}}>Showing {rows.length} of {assigns.length}{assigns.length!==rows.length?' — filtered':''}</div>
+          <div style={{maxHeight:fullPage?'none':'42vh',overflowY:fullPage?'visible':'auto'}}>
+            <table className="p-table">
+              <thead><tr><th>Assignment</th><th>Due</th><th>Submitted</th><th>Mark</th><th>Score</th></tr></thead>
+              <tbody>
+                {rows.length===0&&<tr><td colSpan={5} style={{textAlign:'center',opacity:0.6,padding:'14px 0'}}>Nothing matches those filters.</td></tr>}
+                {rows.map(a=>{
+                  const sub=mySubs.find(s=>s.assignmentId===a.id);
+                  const late=sub&&isLate(a.dueDate,sub.submittedAt);
+                  const has=sub&&sub.mark!=null&&sub.mark!==undefined;
+                  const pc=has&&a.totalMark?Math.round(sub.mark/a.totalMark*100):null;
+                  return <tr key={a.id}>
+                    <td>{a.title} <span className="pill pill-gray" style={{fontSize:10}}>{a.type}</span></td>
+                    <td style={{whiteSpace:'nowrap'}}>{fmtDue(a.dueDate)}</td>
+                    <td>{sub?<span className={"pill "+(late?'pill-amber':'pill-green')}>{late?'Late':'Yes'}</span>:<span className="pill pill-red">No</span>}</td>
+                    <td style={{fontWeight:700,whiteSpace:'nowrap'}}>{has?(sub.mark+'/'+a.totalMark):(sub?<span style={{fontWeight:400,opacity:0.6}}>awaiting</span>:'—')}</td>
+                    <td style={{fontWeight:700,whiteSpace:'nowrap',color:pc==null?undefined:(pc>=70?'#16a34a':(pc>=50?'#b45309':'#b91c1c'))}}>{pc==null?'—':pc+'%'}</td>
+                  </tr>;
+                })}
+              </tbody>
+            </table>
+          </div>
+        </>);
+      })()}
     </>
   );
 }
@@ -2250,7 +2447,7 @@ function Notifications({user,onOpenPosts,onOpenGroup,onOpenMeetings,onAddStudent
     const seenPost=_seen(user.id,'posts');
     DB.posts().filter(p=>(p.at||0)>seenPost).forEach(p=>items.push({t:p.at,txt:'📌 New announcement: '+(p.title||String(p.text||'').slice(0,40)),go:onOpenPosts}));
     const seenTd=_seen(user.id,'ptmsg');
-    DB.messages().filter(m=>m.parentId===user.id&&m.from==='teacher'&&(m.at||0)>seenTd).forEach(m=>items.push({t:m.at,txt:'💬 Teacher: '+String(m.text||'').slice(0,40),go:onOpenChat}));
+    DB.messages().filter(m=>(m.parentId===user.id||m.parentBroadcast)&&m.from==='teacher'&&(m.at||0)>seenTd).forEach(m=>items.push({t:m.at,txt:(m.parentBroadcast?'📢 ':'💬 ')+'Teacher: '+String(m.text||'').slice(0,40),go:onOpenChat}));
   } else {
     const seenPost=_seen(user.id,'posts');
     DB.posts().filter(p=>(p.at||0)>seenPost).forEach(p=>items.push({t:p.at,txt:'📌 New announcement: '+(p.title||String(p.text||'').slice(0,40)),go:onOpenPosts}));
@@ -2527,25 +2724,41 @@ function RecordingsView({user}){
 }
 
 /* ═══════════ PARENT ↔ TEACHER CHAT ═══════════ */
+const PARENT_ALL='__allparents__';
 function ParentChat({parentId,me}){
-  const conv=DB.messages().filter(m=>m.parentId===parentId).sort((a,b)=>a.at-b.at);
+  const isAll=parentId===PARENT_ALL;
+  const conv=DB.messages().filter(m=>
+    isAll ? !!m.parentBroadcast                       /* teacher composing to everyone */
+          : (m.parentId===parentId || !!m.parentBroadcast)  /* a parent sees theirs + announcements */
+  ).sort((a,b)=>a.at-b.at);
   const [msg,setMsg]=useState('');
+  const att=useAttach();
   const listRef=useRef(null);
   useEffect(()=>{ if(listRef.current) listRef.current.scrollTop=listRef.current.scrollHeight; },[conv.length]);
-  function send(){ if(!msg.trim())return; const all=DB.messages(); all.push({id:uid(),parentId:parentId,from:me,text:msg.trim(),at:now()}); DB.save.messages(all); setMsg(''); }
+  function send(){
+    const body=msg.trim();
+    if(!body&&!att.att)return;
+    const file=att.att?{fileName:att.att.name,fileData:att.att.data}:{};
+    const all=DB.messages();
+    const base={id:uid(),parentId:parentId,from:me,text:body,at:now()};
+    if(isAll) base.parentBroadcast=true;
+    all.push(Object.assign(base,file));
+    DB.save.messages(all); setMsg(''); att.setAtt(null);
+  }
   return (
     <div className="chat-body" style={{display:'flex',flexDirection:'column',flex:1,minHeight:0}}>
       <div className="chat-list" ref={listRef}>
-        {conv.length===0&&<div className="empty-state">No messages yet. Say hello 👋</div>}
-        {conv.map(m=><div key={m.id} className={"msg "+(m.from===me?'mine':'')}><div className={"msg-bubble "+(m.from===me?'mine':'other')}>{m.text}</div></div>)}
+        {conv.length===0&&<div className="empty-state">{isAll?'No announcements to parents yet. Anything you send here goes to every parent.':'No messages yet. Say hello 👋'}</div>}
+        {conv.map(m=><div key={m.id} className={"msg "+(m.from===me?'mine':'')}><div className={"msg-bubble "+(m.from===me?'mine':'other')}>{m.parentBroadcast&&<div style={{fontSize:10,opacity:0.6,marginBottom:2}}>📢 To all parents</div>}{m.text}<MsgFile m={m}/></div></div>)}
       </div>
-      <div className="chat-ir"><input value={msg} onChange={e=>setMsg(e.target.value)} onKeyDown={e=>e.key==='Enter'&&send()} placeholder={me==='parent'?'Message the teacher…':'Reply to parent…'}/><button className="chat-send" onClick={send}>Send</button></div>
+      <AttachBar a={att}/>
+      <div className="chat-ir"><AttachBtn a={att}/><input value={msg} onChange={e=>setMsg(e.target.value)} onKeyDown={e=>e.key==='Enter'&&send()} placeholder={me==='parent'?'Message the teacher…':(isAll?'Announcement to ALL parents…':'Reply to parent…')}/><button className="chat-send" onClick={send}>Send</button></div>
     </div>
   );
 }
 function TeacherParentsView(){
   const parents=DB.parents(); const studs=DB.students();
-  const [sel,setSel]=useState(parents[0]?parents[0].id:null);
+  const [sel,setSel]=useState(PARENT_ALL);
   const selParent=parents.find(p=>p.id===sel);
   return (
     <div className="p-main">
@@ -2556,6 +2769,10 @@ function TeacherParentsView(){
           <div className="chat-students">
             <div className="chat-hd">Parents ({parents.length})</div>
             <div style={{flex:1,overflowY:'auto'}}>
+              <div onClick={()=>setSel(PARENT_ALL)} style={{padding:'10px 12px',cursor:'pointer',display:'flex',alignItems:'center',gap:8,background:(sel===PARENT_ALL)?'var(--paper)':'',borderBottom:'2px solid var(--ink)'}}>
+                <div style={{width:28,height:28,borderRadius:'50%',background:'var(--coral)',color:'white',display:'flex',alignItems:'center',justifyContent:'center',fontSize:11,fontWeight:700,flexShrink:0}}>📢</div>
+                <div><div style={{fontSize:13,fontWeight:700}}>All Parents</div><div style={{fontSize:10,opacity:0.6}}>Message everyone at once</div></div>
+              </div>
               {parents.map(p=>{ const child=studs.find(s=>s.id===p.childId); return (
                 <div key={p.id} onClick={()=>setSel(p.id)} style={{padding:'10px 12px',cursor:'pointer',background:(sel===p.id)?'var(--paper)':'',borderBottom:'1px solid #eee'}}>
                   <div style={{fontSize:13,fontWeight:700}}>{p.name}</div>
@@ -2563,7 +2780,9 @@ function TeacherParentsView(){
                 </div>); })}
             </div>
           </div>
-          {selParent&&<ParentChat parentId={selParent.id} me="teacher"/>}
+          {sel===PARENT_ALL
+            ? <ParentChat parentId={PARENT_ALL} me="teacher"/>
+            : (selParent&&<ParentChat parentId={selParent.id} me="teacher"/>)}
         </div>}
       </div>
     </div>
@@ -2700,12 +2919,26 @@ function ParentPortal({user,onLogout}){
         <div style={{background:'white',border:'2px solid var(--ink)',borderRadius:12,padding:'14px 16px',boxShadow:'3px 3px 0 var(--ink)'}}>
           <div style={{fontWeight:700,fontFamily:'Georgia,serif',color:'var(--green-deep)',marginBottom:8}}>Every assignment</div>
           {assigns.length===0&&<div className="empty-state">No homework or mocks yet.</div>}
-          {assigns.map(a=>{ const sub=subs.find(s=>s.assignmentId===a.id); const late=sub&&isLate(a.dueDate,sub.submittedAt);
-            return (<div key={a.id} style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8,padding:'8px 0',borderBottom:'1px solid #eee',fontSize:13}}>
-              <div style={{flex:1}}>{a.title} <span className="pill pill-gray" style={{fontSize:10}}>{a.type}</span></div>
-              {sub?<span className={"pill "+(late?'pill-amber':'pill-green')}>{late?'Late':'On time'}</span>:<span className="pill pill-red">Not done</span>}
-              <div style={{minWidth:54,textAlign:'right',fontWeight:700}}>{sub&&sub.mark!=null&&sub.mark!==undefined?(sub.mark+'/'+a.totalMark):'—'}</div>
-            </div>); })}
+          {assigns.length>0&&<table className="p-table">
+            <thead><tr><th>Assignment</th><th>Due</th><th>Status</th><th>Mark</th><th>Score</th></tr></thead>
+            <tbody>{assigns.map(a=>{
+              const sub=subs.find(s=>s.assignmentId===a.id);
+              const late=sub&&isLate(a.dueDate,sub.submittedAt);
+              const note=dueNote(a.dueDate,sub);
+              const has=sub&&sub.mark!=null&&sub.mark!==undefined;
+              const pct=has&&a.totalMark?Math.round(sub.mark/a.totalMark*100):null;
+              return (<tr key={a.id}>
+                <td>{a.title} <span className="pill pill-gray" style={{fontSize:10}}>{a.type}</span></td>
+                <td>
+                  <div style={{whiteSpace:'nowrap'}}>{fmtDue(a.dueDate)}</div>
+                  {note&&<div style={{fontSize:11,fontWeight:700,color:note.tone,whiteSpace:'nowrap'}}>{note.txt}</div>}
+                </td>
+                <td>{sub?<span className={"pill "+(late?'pill-amber':'pill-green')}>{late?'Late':'On time'}</span>:<span className="pill pill-red">Not done</span>}</td>
+                <td style={{fontWeight:700,whiteSpace:'nowrap'}}>{has?(sub.mark+'/'+a.totalMark):(sub?<span style={{fontWeight:400,opacity:0.6}}>awaiting marking</span>:'—')}</td>
+                <td style={{fontWeight:700,whiteSpace:'nowrap',color:pct==null?undefined:(pct>=70?'#16a34a':(pct>=50?'#b45309':'#b91c1c'))}}>{pct==null?'—':pct+'%'}</td>
+              </tr>); })}
+            </tbody>
+          </table>}
         </div>
         <div style={{fontSize:12,opacity:0.6,marginTop:12}}>Reports update automatically. (Automatic emails would need a mail service — ask the teacher if you'd like that.)</div>
       </div>
@@ -2990,6 +3223,142 @@ function readUpload(file){
   });
 }
 
+/* Load a script once, on demand. Used for the Word viewer so the library is only
+   fetched when somebody actually opens a .docx. */
+const _scriptOnce={};
+function loadScript(src){
+  if(_scriptOnce[src]) return _scriptOnce[src];
+  _scriptOnce[src]=new Promise((res,rej)=>{
+    const el=document.createElement('script'); el.src=src; el.async=true;
+    el.onload=()=>res(true); el.onerror=()=>rej(new Error('script failed'));
+    document.head.appendChild(el);
+  });
+  return _scriptOnce[src];
+}
+const MAMMOTH_URL='https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.12.1/mammoth.browser.min.js';
+const XLSX_URL='https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+
+/* ═══════════ EXCEL EXPORT ═══════════ */
+function safeSheetName(n){ return String(n||'Sheet').replace(/[\\\/\?\*\[\]:]/g,' ').slice(0,31)||'Sheet'; }
+function safeFileName(n){ return String(n||'export').replace(/[^A-Za-z0-9 _-]+/g,'_').replace(/\s+/g,'_').slice(0,80); }
+function todayStamp(){ const d=new Date(); const z=x=>String(x).padStart(2,'0'); return d.getFullYear()+'-'+z(d.getMonth()+1)+'-'+z(d.getDate()); }
+/* Build and download a workbook. sheets = [{name, rows:[[...]], widths:[n]}] */
+async function downloadWorkbook(sheets,fileName){
+  await loadScript(XLSX_URL);
+  if(!window.XLSX) throw new Error('XLSX library did not load');
+  const wb=window.XLSX.utils.book_new();
+  sheets.forEach(sh=>{
+    const ws=window.XLSX.utils.aoa_to_sheet(sh.rows);
+    if(sh.widths) ws['!cols']=sh.widths.map(w=>({wch:w}));
+    /* Filter arrows on the header row so she can sort/filter in Excel. */
+    if(sh.filter){
+      const hdr=sh.filter.row, last=sh.filter.lastRow, cols=sh.filter.cols;
+      ws['!autofilter']={ref:window.XLSX.utils.encode_range(
+        {r:hdr,c:0},{r:last,c:Math.max(0,cols-1)})};
+    }
+    window.XLSX.utils.book_append_sheet(wb,ws,safeSheetName(sh.name));
+  });
+  window.XLSX.writeFile(wb,fileName);
+}
+/* One student: every assignment, one row each. */
+function studentSheet(stu,assigns,subs,groupName){
+  const who=(stu&&stu.name)?stu.name:'Student';
+  /* Her feedback: the name must be visible IN the sheet, not only on the tab. */
+  const rows=[
+    ['Student:',who],
+    ['Email:',(stu&&stu.email)||''],
+    ['Class:',groupName||''],
+    ['Exported:',fmtDate(Date.now())],
+    [],
+    ['Student','Assignment','Type','Due','Submitted on','Status','Mark','Out of','Score %']
+  ];
+  const HDR=rows.length-1;   /* 0-based row index of the header */
+  let got=0,poss=0;
+  assigns.forEach(a=>{
+    const sub=subs.find(x=>x.assignmentId===a.id);
+    const has=sub&&sub.mark!=null&&sub.mark!==undefined;
+    if(has){ got+=sub.mark; poss+=(a.totalMark||0); }
+    rows.push([
+      who, a.title||'', a.type||'', a.dueDate||'',
+      sub?fmtDate(sub.submittedAt):'',
+      sub?(isLate(a.dueDate,sub.submittedAt)?'Late':'On time'):'Not done',
+      has?sub.mark:'', a.totalMark||'',
+      has&&a.totalMark?Math.round(sub.mark/a.totalMark*100):''
+    ]);
+  });
+  const lastRow=rows.length-1;
+  rows.push([]);
+  rows.push([who,'TOTAL','','','','',got,poss,poss?Math.round(got/poss*100):'']);
+  return {name:who,rows,widths:[20,34,11,12,15,11,8,8,9],
+          filter:{row:HDR,lastRow,cols:9}};
+}
+/* Whole class: students down the side, assignments across the top. */
+function classSheets(groupName,studs,assigns,allSubs){
+  const head=['Student','Email'];
+  assigns.forEach(a=>head.push((a.title||'')+' ('+(a.totalMark||0)+')'));
+  head.push('Total','Out of','Score %','Submitted','Not done','Late');
+  const grid=[head];
+  studs.forEach(st=>{
+    const mine=allSubs.filter(x=>x.studentId===st.id);
+    const row=[st.name||'',st.email||''];
+    let got=0,poss=0,done=0,late=0;
+    assigns.forEach(a=>{
+      const sub=mine.find(x=>x.assignmentId===a.id);
+      const has=sub&&sub.mark!=null&&sub.mark!==undefined;
+      if(sub){ done++; if(isLate(a.dueDate,sub.submittedAt)) late++; }
+      if(has){ got+=sub.mark; poss+=(a.totalMark||0); }
+      row.push(has?sub.mark:(sub?'—':''));
+    });
+    row.push(got,poss,poss?Math.round(got/poss*100):'',done,assigns.length-done,late);
+    grid.push(row);
+  });
+  /* A blank cell and a dash are easy to confuse — say plainly what each means. */
+  grid.push([]);
+  grid.push(['KEY:','a number = the mark awarded','—  = handed in, not marked yet','(blank) = not handed in']);
+  grid.push(['Exported '+fmtDate(Date.now())+' · '+studs.length+' students · '+assigns.length+' assignments']);
+  const lastStudentRow=studs.length;   /* header is row 0 */
+  const widths=[22,26].concat(assigns.map(()=>13)).concat([8,8,9,11,10,7]);
+  const info=[['Assignment','Type','Due','Out of','Submitted','Not done','Marked','Class average %']];
+  assigns.forEach(a=>{
+    const subs=allSubs.filter(x=>x.assignmentId===a.id);
+    const marked=subs.filter(x=>x.mark!=null&&x.mark!==undefined);
+    const avg=(marked.length&&a.totalMark)?Math.round(marked.reduce((t,x)=>t+x.mark,0)/marked.length/a.totalMark*100):'';
+    info.push([a.title||'',a.type||'',a.dueDate||'',a.totalMark||'',subs.length,studs.length-subs.length,marked.length,avg]);
+  });
+  return [
+    {name:groupName||'Class',rows:grid,widths,filter:{row:0,lastRow:lastStudentRow,cols:head.length}},
+    {name:'By assignment',rows:info,widths:[34,11,12,8,11,10,8,16],filter:{row:0,lastRow:assigns.length,cols:8}}
+  ];
+}
+function isDocxData(data,name){
+  return !!((name&&/\.docx$/i.test(name))||(data&&data.startsWith('data:application/vnd.openxmlformats-officedocument.wordprocessingml.document')));
+}
+function isLegacyDoc(name){ return !!(name&&/\.doc$/i.test(name)); }
+
+/* Word (.docx) rendered inline. Browsers cannot display Word natively, so the
+   document is converted to HTML in the browser and shown as a page. */
+function DocxView({data,name}){
+  const [html,setHtml]=useState(null); const [err,setErr]=useState('');
+  useEffect(()=>{
+    let dead=false;
+    (async()=>{
+      try{
+        await loadScript(MAMMOTH_URL);
+        if(!window.mammoth) throw new Error('no mammoth');
+        const c=data.indexOf(','); const bin=atob(data.slice(c+1));
+        const buf=new ArrayBuffer(bin.length); const u=new Uint8Array(buf);
+        for(let i=0;i<bin.length;i++) u[i]=bin.charCodeAt(i);
+        const r=await window.mammoth.convertToHtml({arrayBuffer:buf});
+        if(!dead) setHtml(r.value||'<p><em>This document has no text in it.</em></p>');
+      }catch(e){ if(!dead) setErr('Could not open this Word file here — use Download and open it in Word.'); }
+    })();
+    return ()=>{ dead=true; };
+  },[data]);
+  if(err) return <div style={{marginTop:10,fontSize:13,color:'#a11'}}>{err}</div>;
+  if(html==null) return <div style={{marginTop:10,fontSize:13,opacity:0.65}}>⏳ Opening Word document…</div>;
+  return <div className="docx-view" dangerouslySetInnerHTML={{__html:html}}/>;
+}
+
 /* Chrome refuses to render a data: URL inside an iframe — that is why "View file"
    used to show a blank page or silently download instead. Convert to a blob: URL,
    which browsers DO allow, and route PDFs through PdfView (PDF.js) instead. */
@@ -3028,11 +3397,14 @@ function FileView({data,name,fileId}){
   if(!data_) return <div className="empty-state">⏳ Loading file… if it stays blank, this file was uploaded before the fix and needs to be re-uploaded (correction) or re-submitted by the student.</div>;
   if(isImg) return <img src={data_} alt={name||'file'} style={{maxWidth:'100%',border:'2px solid var(--ink)',borderRadius:10}}/>;
   if(isPdf) return <PdfView data={data_}/>;
+  if(isDocxData(data_,name)) return <DocxView data={data_} name={name}/>;
   const ext=((name||'').split('.').pop()||'').toUpperCase();
   return (
     <div style={{marginTop:10,padding:'14px 16px',background:'#FFF4E5',border:'2px solid #E8623D',borderRadius:10}}>
       <div style={{fontWeight:700,fontSize:14,marginBottom:4}}>{ext?(ext+' files'):'This file type'} can’t be displayed inside the browser.</div>
-      <div style={{fontSize:13,marginBottom:10,opacity:0.8}}>The file itself is fine — open it with one of these:</div>
+      <div style={{fontSize:13,marginBottom:10,opacity:0.8}}>{isLegacyDoc(name)
+        ? 'This is an old-style .doc file. Save it as .docx in Word and it will display here; for now, open it with one of these:'
+        : 'The file itself is fine — open it with one of these:'}</div>
       <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
         <a className="a-btn" href={data_} download={name||'file'} style={{textDecoration:'none'}}>⬇ Download</a>
         {blobUrl&&<a className="a-btn" href={blobUrl} target="_blank" rel="noreferrer" style={{textDecoration:'none'}}>↗ Open in a new tab</a>}
