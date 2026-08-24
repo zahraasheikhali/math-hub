@@ -3399,24 +3399,39 @@ async function downloadWorkbook(sheets,fileName){
 }
 /* One student: every assignment, one row each. */
 /* Rows for one block of assignments, shared by the all-time and per-month sheets. */
+/* Rows for a block of assignments. Every row carries its month, so rows stay
+   meaningful wherever they are copied to. */
 function _stuRows(who,list,subs){
   const rows=[]; let got=0,poss=0,done=0,late=0;
+  let hwGot=0,hwPoss=0,mkGot=0,mkPoss=0,hwN=0,mkN=0;
   list.forEach(a=>{
     const sub=subs.find(x=>x.assignmentId===a.id);
     const has=sub&&sub.mark!=null&&sub.mark!==undefined;
-    if(has){ got+=sub.mark; poss+=(a.totalMark||0); }
+    const isMock=(a.type==='mock');
+    if(isMock) mkN++; else hwN++;
+    if(has){
+      got+=sub.mark; poss+=(a.totalMark||0);
+      if(isMock){ mkGot+=sub.mark; mkPoss+=(a.totalMark||0); }
+      else      { hwGot+=sub.mark; hwPoss+=(a.totalMark||0); }
+    }
     if(sub){ done++; if(isLate(a.dueDate,sub.submittedAt)) late++; }
     rows.push([
-      who, a.title||'', a.type||'', a.dueDate||'',
+      who, monthLabel(monthKeyOf(a)), a.title||'', a.type||'', a.dueDate||'',
       sub?fmtDate(sub.submittedAt):'',
       sub?(isLate(a.dueDate,sub.submittedAt)?'Late':'On time'):'Not done',
       has?sub.mark:'', a.totalMark||'',
       has&&a.totalMark?Math.round(sub.mark/a.totalMark*100):''
     ]);
   });
-  return {rows,got,poss,done,late};
+  return {rows,got,poss,done,late,hwGot,hwPoss,mkGot,mkPoss,hwN,mkN};
 }
-const STU_HEAD=['Student','Assignment','Type','Due','Submitted on','Status','Mark','Out of','Score %'];
+const STU_HEAD=['Student','Month','Assignment','Type','Due','Submitted on','Status','Mark','Out of','Score %'];
+const STU_WIDTHS=[20,16,34,11,12,15,11,8,8,9];
+function _pct(got,poss){ return poss?Math.round(got/poss*100):''; }
+/* Nothing marked yet must read blank, not 0/0 — that looks like a zero score. */
+function _mk(v,poss){ return poss?v:''; }
+/* A subtotal line lined up under the Mark / Out of / Score % columns. */
+function _totalRow(who,label,got,poss){ return [who,'',label,'','','','',_mk(got,poss),_mk(poss,poss),_pct(got,poss)]; }
 
 /* Workbook for one student: a month summary, one sheet per month, then everything. */
 function studentWorkbook(stu,assigns,subs,groupName){
@@ -3424,26 +3439,36 @@ function studentWorkbook(stu,assigns,subs,groupName){
   const months=buildMonths(assigns);
   const sheets=[];
 
-  /* 1 — Summary: one line per month, so the year is readable at a glance. */
+  /* 1 — Summary: one line per month, homework and mocks kept apart. */
   const sum=[
     ['Student:',who],['Email:',(stu&&stu.email)||''],['Class:',groupName||''],['Exported:',fmtDate(Date.now())],
     [],
-    ['Month','Assignments','Submitted','Not done','Late','Marks','Out of','Score %']
+    ['Month','Assignments','Homework','Mocks','Submitted','Not done','Late',
+     'Homework marks','out of','Homework %','Mock marks','out of','Mock %','Total marks','out of','Score %']
   ];
   const HDR=sum.length-1;
-  let gGot=0,gPoss=0,gDone=0,gLate=0;
+  let gGot=0,gPoss=0,gDone=0,gLate=0,gHwG=0,gHwP=0,gMkG=0,gMkP=0,gHwN=0,gMkN=0;
   months.forEach(mo=>{
     const list=assigns.filter(a=>monthKeyOf(a)===mo.key);
     const r=_stuRows(who,list,subs);
     gGot+=r.got; gPoss+=r.poss; gDone+=r.done; gLate+=r.late;
-    sum.push([mo.label,list.length,r.done,list.length-r.done,r.late,r.got,r.poss,r.poss?Math.round(r.got/r.poss*100):'']);
+    gHwG+=r.hwGot; gHwP+=r.hwPoss; gMkG+=r.mkGot; gMkP+=r.mkPoss; gHwN+=r.hwN; gMkN+=r.mkN;
+    sum.push([mo.label,list.length,r.hwN,r.mkN,r.done,list.length-r.done,r.late,
+              _mk(r.hwGot,r.hwPoss),_mk(r.hwPoss,r.hwPoss),_pct(r.hwGot,r.hwPoss),
+              _mk(r.mkGot,r.mkPoss),_mk(r.mkPoss,r.mkPoss),_pct(r.mkGot,r.mkPoss),
+              _mk(r.got,r.poss),_mk(r.poss,r.poss),_pct(r.got,r.poss)]);
   });
   sum.push([]);
-  sum.push(['WHOLE YEAR',assigns.length,gDone,assigns.length-gDone,gLate,gGot,gPoss,gPoss?Math.round(gGot/gPoss*100):'']);
-  sheets.push({name:'Summary by month',rows:sum,widths:[20,13,11,10,7,8,8,9],
-               filter:{row:HDR,lastRow:HDR+months.length,cols:8}});
+  sum.push(['WHOLE YEAR',assigns.length,gHwN,gMkN,gDone,assigns.length-gDone,gLate,
+            _mk(gHwG,gHwP),_mk(gHwP,gHwP),_pct(gHwG,gHwP),
+            _mk(gMkG,gMkP),_mk(gMkP,gMkP),_pct(gMkG,gMkP),
+            _mk(gGot,gPoss),_mk(gPoss,gPoss),_pct(gGot,gPoss)]);
+  sheets.push({name:'Summary by month',rows:sum,
+               widths:[18,12,10,7,10,9,6,15,8,12,12,8,9,12,8,9],
+               filter:{row:HDR,lastRow:HDR+months.length,cols:16}});
 
-  /* 2 — one sheet per month, newest first. */
+  /* 2 — one sheet per month: every homework and mock with its grade, then
+         homework, mock and month subtotals. */
   months.forEach(mo=>{
     const list=assigns.filter(a=>monthKeyOf(a)===mo.key)
       .slice().sort((x,y)=>(x.dueDate||'').localeCompare(y.dueDate||''));
@@ -3451,12 +3476,13 @@ function studentWorkbook(stu,assigns,subs,groupName){
     const rows=[[who+' — '+mo.label],[],STU_HEAD].concat(r.rows);
     const lastRow=rows.length-1;
     rows.push([]);
-    rows.push([who,'MONTH TOTAL','','','','',r.got,r.poss,r.poss?Math.round(r.got/r.poss*100):'']);
-    sheets.push({name:monthShort(mo.key),rows,widths:[20,34,11,12,15,11,8,8,9],
-                 filter:{row:2,lastRow,cols:9}});
+    if(r.hwN) rows.push(_totalRow(who,'HOMEWORK TOTAL',r.hwGot,r.hwPoss));
+    if(r.mkN) rows.push(_totalRow(who,'MOCK TOTAL',r.mkGot,r.mkPoss));
+    rows.push(_totalRow(who,'MONTH TOTAL',r.got,r.poss));
+    sheets.push({name:monthShort(mo.key),rows,widths:STU_WIDTHS,filter:{row:2,lastRow,cols:10}});
   });
 
-  /* 3 — everything in one list, for sorting across the whole year. */
+  /* 3 — everything in one list, month named on every row. */
   sheets.push(studentSheet(stu,assigns,subs,groupName,'All assignments'));
   return sheets;
 }
@@ -3464,60 +3490,106 @@ function studentWorkbook(stu,assigns,subs,groupName){
 function studentSheet(stu,assigns,subs,groupName,sheetName){
   const who=(stu&&stu.name)?stu.name:'Student';
   /* Her feedback: the name must be visible IN the sheet, not only on the tab. */
+  const ordered=assigns.slice().sort((x,y)=>
+    monthKeyOf(y).localeCompare(monthKeyOf(x))||(x.dueDate||'').localeCompare(y.dueDate||''));
+  const r=_stuRows(who,ordered,subs);
   const rows=[
     ['Student:',who],
     ['Email:',(stu&&stu.email)||''],
     ['Class:',groupName||''],
     ['Exported:',fmtDate(Date.now())],
     [],
-    ['Student','Assignment','Type','Due','Submitted on','Status','Mark','Out of','Score %']
-  ];
-  const HDR=rows.length-1;   /* 0-based row index of the header */
-  let got=0,poss=0;
-  assigns.forEach(a=>{
-    const sub=subs.find(x=>x.assignmentId===a.id);
-    const has=sub&&sub.mark!=null&&sub.mark!==undefined;
-    if(has){ got+=sub.mark; poss+=(a.totalMark||0); }
-    rows.push([
-      who, a.title||'', a.type||'', a.dueDate||'',
-      sub?fmtDate(sub.submittedAt):'',
-      sub?(isLate(a.dueDate,sub.submittedAt)?'Late':'On time'):'Not done',
-      has?sub.mark:'', a.totalMark||'',
-      has&&a.totalMark?Math.round(sub.mark/a.totalMark*100):''
-    ]);
-  });
+    STU_HEAD
+  ].concat(r.rows);
+  const HDR=5;
   const lastRow=rows.length-1;
   rows.push([]);
-  rows.push([who,'TOTAL','','','','',got,poss,poss?Math.round(got/poss*100):'']);
-  return {name:sheetName||who,rows,widths:[20,34,11,12,15,11,8,8,9],
-          filter:{row:HDR,lastRow,cols:9}};
+  if(r.hwN) rows.push(_totalRow(who,'HOMEWORK TOTAL (year)',r.hwGot,r.hwPoss));
+  if(r.mkN) rows.push(_totalRow(who,'MOCK TOTAL (year)',r.mkGot,r.mkPoss));
+  rows.push(_totalRow(who,'TOTAL (year)',r.got,r.poss));
+  return {name:sheetName||who,rows,widths:STU_WIDTHS,filter:{row:HDR,lastRow,cols:10}};
 }
-/* Whole class: students down the side, assignments across the top. */
-function classSheets(groupName,studs,assigns,allSubs){
+/* One grid: students down the side, the given assignments across the top. */
+function _classGrid(studs,list,allSubs){
   const head=['Student','Email'];
-  assigns.forEach(a=>head.push((a.title||'')+' ('+(a.totalMark||0)+')'));
+  list.forEach(a=>head.push((a.title||'')+' ('+(a.totalMark||0)+')'));
   head.push('Total','Out of','Score %','Submitted','Not done','Late');
-  const grid=[head];
+  const rows=[head];
   studs.forEach(st=>{
     const mine=allSubs.filter(x=>x.studentId===st.id);
     const row=[st.name||'',st.email||''];
     let got=0,poss=0,done=0,late=0;
-    assigns.forEach(a=>{
+    list.forEach(a=>{
       const sub=mine.find(x=>x.assignmentId===a.id);
       const has=sub&&sub.mark!=null&&sub.mark!==undefined;
       if(sub){ done++; if(isLate(a.dueDate,sub.submittedAt)) late++; }
       if(has){ got+=sub.mark; poss+=(a.totalMark||0); }
       row.push(has?sub.mark:(sub?'—':''));
     });
-    row.push(got,poss,poss?Math.round(got/poss*100):'',done,assigns.length-done,late);
-    grid.push(row);
+    row.push(_mk(got,poss),_mk(poss,poss),_pct(got,poss),done,list.length-done,late);
+    rows.push(row);
   });
-  /* A blank cell and a dash are easy to confuse — say plainly what each means. */
-  grid.push([]);
-  grid.push(['KEY:','a number = the mark awarded','—  = handed in, not marked yet','(blank) = not handed in']);
-  grid.push(['Exported '+fmtDate(Date.now())+' · '+studs.length+' students · '+assigns.length+' assignments']);
-  const lastStudentRow=studs.length;   /* header is row 0 */
-  const widths=[22,26].concat(assigns.map(()=>13)).concat([8,8,9,11,10,7]);
+  const widths=[22,26].concat(list.map(()=>13)).concat([8,8,9,11,10,7]);
+  return {rows,widths,cols:head.length};
+}
+function _keyRows(studs,list){
+  return [
+    [],
+    ['KEY:','a number = the mark awarded','—  = handed in, not marked yet','(blank) = not handed in'],
+    ['Exported '+fmtDate(Date.now())+' · '+studs.length+' students · '+list.length+' assignments']
+  ];
+}
+
+/* Whole class, organised like the student workbook: a month summary, one grid
+   per month, the full year, then per-assignment stats. Months are independent —
+   a month with 3 homework simply gets 3 columns, one with 5 gets 5. */
+function classSheets(groupName,studs,assigns,allSubs){
+  const months=buildMonths(assigns);
+  const sheets=[];
+
+  /* 1 — Summary: one row per month for the class as a whole. */
+  const sum=[
+    ['Class:',groupName||''],['Students:',studs.length],['Exported:',fmtDate(Date.now())],
+    [],
+    ['Month','Assignments','Homework','Mocks','Expected hand-ins','Submitted','Not done','Late','Marked','Class average %']
+  ];
+  const HDR=sum.length-1;
+  months.forEach(mo=>{
+    const list=assigns.filter(a=>monthKeyOf(a)===mo.key);
+    const ids={}; list.forEach(a=>ids[a.id]=a);
+    const subs=allSubs.filter(x=>ids[x.assignmentId]);
+    const marked=subs.filter(x=>x.mark!=null&&x.mark!==undefined);
+    let got=0,poss=0,late=0;
+    subs.forEach(x=>{
+      const a=ids[x.assignmentId];
+      if(isLate(a.dueDate,x.submittedAt)) late++;
+      if(x.mark!=null&&x.mark!==undefined){ got+=x.mark; poss+=(a.totalMark||0); }
+    });
+    const expected=list.length*studs.length;
+    sum.push([mo.label,list.length,list.filter(a=>a.type!=='mock').length,list.filter(a=>a.type==='mock').length,
+              expected,subs.length,expected-subs.length,late,marked.length,_pct(got,poss)]);
+  });
+  sheets.push({name:'Summary by month',rows:sum,widths:[18,12,11,7,17,11,10,7,8,16],
+               filter:{row:HDR,lastRow:HDR+months.length,cols:10}});
+
+  /* 2 — one grid per month, newest first. */
+  months.forEach(mo=>{
+    const list=assigns.filter(a=>monthKeyOf(a)===mo.key)
+      .slice().sort((x,y)=>(x.dueDate||'').localeCompare(y.dueDate||''));
+    const g=_classGrid(studs,list,allSubs);
+    const title=(groupName||'Class')+' — '+mo.label+'  ('+list.length+' assignment'+(list.length===1?'':'s')+')';
+    const rows=[[title],[]].concat(g.rows).concat(_keyRows(studs,list));
+    sheets.push({name:monthShort(mo.key),rows,widths:g.widths,
+                 filter:{row:2,lastRow:2+studs.length,cols:g.cols}});
+  });
+
+  /* 3 — the whole year in one grid. */
+  const ordered=assigns.slice().sort((x,y)=>monthKeyOf(x).localeCompare(monthKeyOf(y))||(x.dueDate||'').localeCompare(y.dueDate||''));
+  const all=_classGrid(studs,ordered,allSubs);
+  sheets.push({name:'Whole year',rows:all.rows.concat(_keyRows(studs,ordered)),widths:all.widths,
+               filter:{row:0,lastRow:studs.length,cols:all.cols}});
+
+  /* 4 — per-assignment stats. */
   const info=[['Month','Assignment','Type','Due','Out of','Submitted','Not done','Marked','Class average %']];
   assigns.slice().sort((x,y)=>monthKeyOf(y).localeCompare(monthKeyOf(x))||(y.dueDate||'').localeCompare(x.dueDate||'')).forEach(a=>{
     const subs=allSubs.filter(x=>x.assignmentId===a.id);
@@ -3525,10 +3597,9 @@ function classSheets(groupName,studs,assigns,allSubs){
     const avg=(marked.length&&a.totalMark)?Math.round(marked.reduce((t,x)=>t+x.mark,0)/marked.length/a.totalMark*100):'';
     info.push([monthLabel(monthKeyOf(a)),a.title||'',a.type||'',a.dueDate||'',a.totalMark||'',subs.length,studs.length-subs.length,marked.length,avg]);
   });
-  return [
-    {name:groupName||'Class',rows:grid,widths,filter:{row:0,lastRow:lastStudentRow,cols:head.length}},
-    {name:'By assignment',rows:info,widths:[18,34,11,12,8,11,10,8,16],filter:{row:0,lastRow:assigns.length,cols:9}}
-  ];
+  sheets.push({name:'By assignment',rows:info,widths:[18,34,11,12,8,11,10,8,16],
+               filter:{row:0,lastRow:assigns.length,cols:9}});
+  return sheets;
 }
 function isDocxData(data,name){
   return !!((name&&/\.docx$/i.test(name))||(data&&data.startsWith('data:application/vnd.openxmlformats-officedocument.wordprocessingml.document')));
