@@ -517,6 +517,52 @@ function now() { return Date.now(); }
 function fmtDate(ts) { return new Date(ts).toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'}); }
 function initials(n) { return (n||'?').split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase(); }
 function isLate(due,subAt) { if(!due||!subAt) return false; const end=new Date(due+'T23:59:59').getTime(); return !isNaN(end) ? subAt>end : subAt>new Date(due).getTime(); }
+/* ═══════════ MONTHS ═══════════
+   A year of homework is unreadable in one list, so everything is grouped by the
+   month it was due (falling back to when it was created). */
+function monthKeyOf(a){
+  const t=a&&a.dueDate?new Date(a.dueDate+'T00:00:00').getTime():(a&&a.createdAt)||0;
+  if(!t||isNaN(t)) return '0000-00';
+  const d=new Date(t); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');
+}
+function monthLabel(key){
+  if(!key||key==='0000-00') return 'No date';
+  const [y,m]=key.split('-').map(Number);
+  const d=new Date(y,(m||1)-1,1);
+  return isNaN(d.getTime())?key:d.toLocaleDateString('en-GB',{month:'long',year:'numeric'});
+}
+function monthShort(key){
+  if(!key||key==='0000-00') return 'No date';
+  const [y,m]=key.split('-').map(Number);
+  const d=new Date(y,(m||1)-1,1);
+  return isNaN(d.getTime())?key:d.toLocaleDateString('en-GB',{month:'short',year:'numeric'});
+}
+/* [{key,label,count}] newest first. */
+function buildMonths(items){
+  const map={};
+  items.forEach(a=>{ const k=monthKeyOf(a); map[k]=(map[k]||0)+1; });
+  return Object.keys(map).sort((a,b)=>b.localeCompare(a)).map(k=>({key:k,label:monthLabel(k),count:map[k]}));
+}
+/* The month to open on: the newest one that actually has something in it. */
+function newestMonth(items){ const m=buildMonths(items); return m.length?m[0].key:'all'; }
+
+function MonthPicker({months,value,onChange,total,noun}){
+  if(!months.length) return null;
+  const latest=months[0].key;
+  return (
+    <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap',marginBottom:12}}>
+      <span style={{fontSize:12,fontWeight:700,opacity:0.7}}>📅 Month:</span>
+      <select value={value} onChange={e=>onChange(e.target.value)}
+        style={{padding:'6px 10px',border:'2px solid var(--ink)',borderRadius:8,fontSize:13,fontFamily:'inherit',fontWeight:600,background:'#fff',color:'var(--ink)'}}>
+        {months.map(m=><option key={m.key} value={m.key}>{m.label} ({m.count}){m.key===latest?'  ← latest':''}</option>)}
+        <option value="all">All months ({total})</option>
+      </select>
+      {value!==latest&&<button className="a-btn" style={{fontSize:11,padding:'4px 10px'}} onClick={()=>onChange(latest)}>↩ Back to latest</button>}
+      {value==='all'&&<span style={{fontSize:12,opacity:0.6}}>showing every {noun||'item'} of the year</span>}
+    </div>
+  );
+}
+
 /* Due-date display for a student's own row: the date plus how it's going. */
 function fmtDue(due){ if(!due) return '—'; const d=new Date(due+'T00:00:00'); return isNaN(d.getTime())?due:d.toLocaleDateString('en-GB',{day:'2-digit',month:'short'}); }
 function dueNote(due,sub){
@@ -622,6 +668,17 @@ async function _uploadFile(b64){
   _fileBlobs[fid]=b64;
   return fid;
 }
+/* Deleting a message must also delete its file, or the storage is never reclaimed. */
+async function _deleteFileById(fid){
+  if(!fid||!fdb) return;
+  try{
+    const meta=await fileRef(fid).get();
+    const n=(meta.exists?(meta.data()||{}).n:0)||0;
+    for(let i=0;i<n;i++){ try{ await fileRef(fid).collection('chunks').doc(String(i)).delete(); }catch(e){} }
+    try{ await fileRef(fid).delete(); }catch(e){}
+  }catch(e){}
+  delete _fileBlobs[fid];
+}
 async function _downloadFile(fid){
   if(_fileBlobs[fid]!=null) return _fileBlobs[fid];
   if(_fileLoading[fid]) return null;
@@ -701,7 +758,12 @@ const DB = {
   /* Fetch one file's bytes on demand (used by FileView / download buttons). */
   fetchFile:fid=>_downloadFile(fid),
   fileBytes:fid=>(fid?_fileBlobs[fid]:null),
+  deleteFile:fid=>_deleteFileById(fid),
 };
+
+/* Who may change a message: you can manage your own; the teacher can remove any. */
+function canEditMsg(m,meId){ return !!m&&m.from===meId; }
+function canDeleteMsg(m,meId,isTeacher){ return !!m&&(m.from===meId||!!isTeacher); }
 
 /* Does this record have a file, whether or not its bytes are downloaded yet? */
 function hasFile(item,field){ return !!(item&&(item[field]||item[field+'Id'])); }
@@ -1705,7 +1767,13 @@ function FullReviewPage({assignId,group,tick,refresh}) {
 /* ═══════════ ASSIGN VIEW ═══════════ */
 function AssignView({type,groupId,user,onModal,tick,refresh,onReview}) {
   const isT=user.role==='teacher';
-  const assigns=DB.assignments().filter(a=>a.groupId===groupId&&a.type===type);
+  const all=DB.assignments().filter(a=>a.groupId===groupId&&a.type===type)
+    .sort((x,y)=>monthKeyOf(y).localeCompare(monthKeyOf(x))||((y.dueDate||'')>(x.dueDate||'')?1:-1));
+  const months=buildMonths(all);
+  const [month,setMonth]=useState(()=>newestMonth(all));
+  /* if everything in the chosen month is deleted, fall back to the newest one */
+  const chosen=months.find(m=>m.key===month)||month==='all'?month:newestMonth(all);
+  const assigns=chosen==='all'?all:all.filter(a=>monthKeyOf(a)===chosen);
   const subs=DB.submissions();
   const lbl=type==='homework'?'Homework':'Mock Exam';
   function delAssign(id){ if(!confirm('Delete this assignment and all submissions?'))return; DB.save.assignments(DB.assignments().filter(a=>a.id!==id)); DB.save.submissions(DB.submissions().filter(s=>s.assignmentId!==id)); refresh(); }
@@ -1715,7 +1783,9 @@ function AssignView({type,groupId,user,onModal,tick,refresh,onReview}) {
         <div style={{fontFamily:'Georgia,serif',fontWeight:700,fontSize:17,color:'var(--green-deep)'}}>{lbl}</div>
         {isT&&<button className="small-btn" onClick={()=>onModal({type:'addAssign',id:groupId,extra:type})}>＋ Add {lbl}</button>}
       </div>
-      {assigns.length===0&&<div className="empty-state">No {lbl.toLowerCase()} yet.</div>}
+      <MonthPicker months={months} value={chosen} onChange={setMonth} total={all.length} noun={type==='mock'?'mock':'homework'}/>
+      {all.length===0&&<div className="empty-state">No {lbl.toLowerCase()} yet.</div>}
+      {all.length>0&&assigns.length===0&&<div className="empty-state">Nothing in {monthLabel(chosen)}. Choose another month above.</div>}
       {assigns.map(a=>{
         const mySub=subs.find(s=>s.assignmentId===a.id&&s.studentId===user.id);
         const allSubs=isT?subs.filter(s=>s.assignmentId===a.id):[];
@@ -1818,6 +1888,11 @@ function TrackView({groupId,user,onModal,onDetail,tick}) {
       )}
     </div>
   );
+  const monthsT=buildMonths(assigns);
+  const [tMonth,setTMonth]=useState(()=>newestMonth(assigns));
+  const tChosen=(monthsT.find(m=>m.key===tMonth)||tMonth==='all')?tMonth:newestMonth(assigns);
+  const shown=(tChosen==='all'?assigns:assigns.filter(a=>monthKeyOf(a)===tChosen))
+    .slice().sort((x,y)=>(y.dueDate||'').localeCompare(x.dueDate||''));
   const mySubs=subs.filter(s=>s.studentId===user.id&&assigns.find(a=>a.id===s.assignmentId));
   const marked=mySubs.filter(s=>s.mark!==null&&s.mark!==undefined);
   const avg=marked.length?Math.round(marked.map(s=>{const a=assigns.find(x=>x.id===s.assignmentId);return a?s.mark/a.totalMark*100:0;}).reduce((a,b)=>a+b,0)/marked.length):null;
@@ -1829,10 +1904,12 @@ function TrackView({groupId,user,onModal,onDetail,tick}) {
         <div className="p-stat"><div className="n">{marked.length}</div><div className="l">Marked</div></div>
         <div className="p-stat"><div className="n">{avg!==null?avg+'%':'—'}</div><div className="l">Avg score</div></div>
       </div>
+      <MonthPicker months={monthsT} value={tChosen} onChange={setTMonth} total={assigns.length} noun="assignment"/>
       {assigns.length===0&&<div className="empty-state">No assignments yet.</div>}
-      {assigns.length>0&&<table className="p-table">
+      {assigns.length>0&&shown.length===0&&<div className="empty-state">Nothing in {monthLabel(tChosen)}. Choose another month above.</div>}
+      {shown.length>0&&<table className="p-table">
         <thead><tr><th>Assignment</th><th>Type</th><th>Due</th><th>Status</th><th>Mark</th></tr></thead>
-        <tbody>{assigns.map(a=>{
+        <tbody>{shown.map(a=>{
           const sub=mySubs.find(s=>s.assignmentId===a.id);
           const note=dueNote(a.dueDate,sub);
           const late=sub&&isLate(a.dueDate,sub.submittedAt);
@@ -1900,6 +1977,40 @@ function AttachBar({a}){
     </div>
   );
 }
+/* Bubble contents: the text (or an edit box), the attachment, and the small
+   ✏️/🗑 controls. Used by every chat so behaviour is identical everywhere. */
+function MsgBody({m,canEdit,canDelete,onSave,onDelete}){
+  const [editing,setEditing]=useState(false);
+  const [txt,setTxt]=useState(m.text||'');
+  useEffect(()=>{ setTxt(m.text||''); },[m.text]);
+  if(editing){
+    return (
+      <div>
+        <input value={txt} autoFocus onChange={e=>setTxt(e.target.value)}
+          onKeyDown={e=>{ if(e.key==='Enter'){ onSave(m,txt); setEditing(false); } if(e.key==='Escape') setEditing(false); }}
+          style={{width:'100%',padding:'6px 9px',border:'2px solid var(--ink)',borderRadius:7,fontSize:13,fontFamily:'inherit'}}/>
+        <div style={{display:'flex',gap:6,marginTop:6}}>
+          <button className="a-btn" style={{fontSize:11,padding:'3px 9px'}} onClick={()=>{ onSave(m,txt); setEditing(false); }}>Save</button>
+          <button className="a-btn" style={{fontSize:11,padding:'3px 9px'}} onClick={()=>{ setTxt(m.text||''); setEditing(false); }}>Cancel</button>
+        </div>
+      </div>
+    );
+  }
+  return (<>
+    {m.text}
+    {m.editedAt&&<span style={{fontSize:10,opacity:0.55,marginLeft:6}}>(edited)</span>}
+    <MsgFile m={m}/>
+    {(canEdit||canDelete)&&(
+      <div style={{display:'flex',gap:6,marginTop:6,opacity:0.75}}>
+        {canEdit&&m.text!==undefined&&<button className="a-btn" title="Edit this message"
+          style={{fontSize:10,padding:'2px 7px'}} onClick={()=>setEditing(true)}>✏️ Edit</button>}
+        {canDelete&&<button className="a-btn danger" title="Delete this message"
+          style={{fontSize:10,padding:'2px 7px'}} onClick={()=>onDelete(m)}>🗑 Delete</button>}
+      </div>
+    )}
+  </>);
+}
+
 /* An attachment shown inside a chat bubble. */
 function MsgFile({m}){
   const [open,setOpen]=useState(false);
@@ -1945,6 +2056,18 @@ function ChatView({groupId,user,chatTarget,setChatTarget,tick,refresh}) {
     DB.save.messages(msgs);
     setMsg(''); att.setAtt(null); refresh();
   }
+  const meId=isT?'teacher':user.id;
+  function saveEdit(m,text){
+    const msgs=DB.messages(); const t=msgs.find(x=>x.id===m.id);
+    if(t){ t.text=String(text||'').trim(); t.editedAt=now(); }
+    DB.save.messages(msgs); refresh();
+  }
+  function removeMsg(m){
+    if(!confirm(m.fileName?('Delete this message and its file "'+m.fileName+'"? This cannot be undone.')
+                          :'Delete this message? This cannot be undone.')) return;
+    if(m.fileDataId) DB.deleteFile(m.fileDataId);
+    DB.save.messages(DB.messages().filter(x=>x.id!==m.id)); refresh();
+  }
   if(isT){
     let conv;
     if(target===ALL_TARGET){
@@ -1970,7 +2093,7 @@ function ChatView({groupId,user,chatTarget,setChatTarget,tick,refresh}) {
         </div>
         <div className="chat-body">
           <div className="chat-hd">{target===ALL_TARGET?'📢 Broadcast to all students':'Chat with '+(studs.find(s=>s.id===target)||{name:'Student'}).name}</div>
-          <div className="chat-list" id="chat-list-el">{conv.map(m=><div key={m.id} className={"msg "+(m.from==='teacher'?'mine':'')}><div className={"msg-bubble "+(m.from==='teacher'?'mine':'other')}>{m.broadcast&&<div style={{fontSize:10,opacity:0.6,marginBottom:2}}>📢 Broadcast</div>}{m.text}<MsgFile m={m}/></div></div>)}</div>
+          <div className="chat-list" id="chat-list-el">{conv.map(m=><div key={m.id} className={"msg "+(m.from==='teacher'?'mine':'')}><div className={"msg-bubble "+(m.from==='teacher'?'mine':'other')}>{m.broadcast&&<div style={{fontSize:10,opacity:0.6,marginBottom:2}}>📢 Broadcast</div>}<MsgBody m={m} canEdit={canEditMsg(m,meId)} canDelete={canDeleteMsg(m,meId,isT)} onSave={saveEdit} onDelete={removeMsg}/></div></div>)}</div>
           <AttachBar a={att}/>
           <div className="chat-ir"><AttachBtn a={att}/><input value={msg} onChange={e=>setMsg(e.target.value)} onKeyDown={e=>e.key==='Enter'&&send()} placeholder={target===ALL_TARGET?'Broadcast to all students…':'Type a message…'}/><button className="chat-send" onClick={send}>Send</button></div>
         </div>
@@ -2004,8 +2127,7 @@ function ChatView({groupId,user,chatTarget,setChatTarget,tick,refresh}) {
           return <div key={m.id} className={"msg "+(isMine?'mine':'')}>
             <div className={"msg-bubble "+(isMine?'mine':'other')}>
               {m.broadcast&&<div style={{fontSize:10,opacity:0.6,marginBottom:2}}>📢 Teacher</div>}
-              {m.text}
-              <MsgFile m={m}/>
+              <MsgBody m={m} canEdit={canEditMsg(m,meId)} canDelete={canDeleteMsg(m,meId,isT)} onSave={saveEdit} onDelete={removeMsg}/>
             </div>
           </div>;
         })}</div>
@@ -2233,6 +2355,7 @@ function CorrectionForm({assignId,onDone}) {
 function StudentDetail({studentId,groupId,fullPage}) {
   const stu=DB.students().find(s=>s.id===studentId);
   const assigns=DB.assignments().filter(a=>a.groupId===groupId);
+  const [month,setMonth]=useState('all');   /* 'all' or a YYYY-MM key */
   const [kind,setKind]=useState('all');     /* all | homework | mock */
   const [state,setState]=useState('all');   /* all | marked | unmarked | missing */
   const [q,setQ]=useState('');
@@ -2249,7 +2372,7 @@ function StudentDetail({studentId,groupId,fullPage}) {
       <div style={{display:'flex',justifyContent:'flex-end',marginBottom:12}}>
         <ExcelBtn
           label={'⬇ Download '+((stu&&stu.name)?stu.name.split(' ')[0]+"'s":'these')+' results (Excel)'}
-          build={()=>[studentSheet(stu,assigns,mySubs,(DB.groups().find(g=>g.id===groupId)||{}).name)]}
+          build={()=>studentWorkbook(stu,assigns,mySubs,(DB.groups().find(g=>g.id===groupId)||{}).name)}
           fileName={()=>safeFileName((stu&&stu.name?stu.name:'student')+'_results_'+todayStamp())+'.xlsx'}/>
       </div>
       <div className="p-stat-row" style={{marginBottom:16}}>
@@ -2269,7 +2392,9 @@ function StudentDetail({studentId,groupId,fullPage}) {
           const bd=b.dueDate?new Date(b.dueDate+'T00:00:00').getTime():(b.createdAt||0);
           return bd-ad;
         });
+        const monthsD=buildMonths(assigns);
         const rows=ordered.filter(a=>{
+          if(month!=='all'&&monthKeyOf(a)!==month) return false;
           if(kind!=='all'&&a.type!==kind) return false;
           const sub=mySubs.find(s=>s.assignmentId===a.id);
           const has=sub&&sub.mark!=null&&sub.mark!==undefined;
@@ -2283,6 +2408,7 @@ function StudentDetail({studentId,groupId,fullPage}) {
           <button key={val} className="a-btn" onClick={()=>set(val)}
             style={{fontSize:11,padding:'4px 10px',background:cur===val?'var(--green-deep)':'',color:cur===val?'#fff':'',borderColor:cur===val?'var(--green-deep)':''}}>{label}</button>);
         return (<>
+          <MonthPicker months={monthsD} value={month} onChange={setMonth} total={assigns.length} noun="assignment"/>
           <div style={{display:'flex',gap:6,flexWrap:'wrap',alignItems:'center',marginBottom:10}}>
             {chip(kind,setKind,'all','All')}
             {chip(kind,setKind,'homework','Homework')}
@@ -2745,11 +2871,22 @@ function ParentChat({parentId,me}){
     all.push(Object.assign(base,file));
     DB.save.messages(all); setMsg(''); att.setAtt(null);
   }
+  function saveEdit(m,text){
+    const all=DB.messages(); const t=all.find(x=>x.id===m.id);
+    if(t){ t.text=String(text||'').trim(); t.editedAt=now(); }
+    DB.save.messages(all);
+  }
+  function removeMsg(m){
+    if(!confirm(m.fileName?('Delete this message and its file "'+m.fileName+'"? This cannot be undone.')
+                          :'Delete this message? This cannot be undone.')) return;
+    if(m.fileDataId) DB.deleteFile(m.fileDataId);
+    DB.save.messages(DB.messages().filter(x=>x.id!==m.id));
+  }
   return (
     <div className="chat-body" style={{display:'flex',flexDirection:'column',flex:1,minHeight:0}}>
       <div className="chat-list" ref={listRef}>
         {conv.length===0&&<div className="empty-state">{isAll?'No announcements to parents yet. Anything you send here goes to every parent.':'No messages yet. Say hello 👋'}</div>}
-        {conv.map(m=><div key={m.id} className={"msg "+(m.from===me?'mine':'')}><div className={"msg-bubble "+(m.from===me?'mine':'other')}>{m.parentBroadcast&&<div style={{fontSize:10,opacity:0.6,marginBottom:2}}>📢 To all parents</div>}{m.text}<MsgFile m={m}/></div></div>)}
+        {conv.map(m=><div key={m.id} className={"msg "+(m.from===me?'mine':'')}><div className={"msg-bubble "+(m.from===me?'mine':'other')}>{m.parentBroadcast&&<div style={{fontSize:10,opacity:0.6,marginBottom:2}}>📢 To all parents</div>}<MsgBody m={m} canEdit={canEditMsg(m,me)} canDelete={canDeleteMsg(m,me,me==='teacher')} onSave={saveEdit} onDelete={removeMsg}/></div></div>)}
       </div>
       <AttachBar a={att}/>
       <div className="chat-ir"><AttachBtn a={att}/><input value={msg} onChange={e=>setMsg(e.target.value)} onKeyDown={e=>e.key==='Enter'&&send()} placeholder={me==='parent'?'Message the teacher…':(isAll?'Announcement to ALL parents…':'Reply to parent…')}/><button className="chat-send" onClick={send}>Send</button></div>
@@ -3261,7 +3398,70 @@ async function downloadWorkbook(sheets,fileName){
   window.XLSX.writeFile(wb,fileName);
 }
 /* One student: every assignment, one row each. */
-function studentSheet(stu,assigns,subs,groupName){
+/* Rows for one block of assignments, shared by the all-time and per-month sheets. */
+function _stuRows(who,list,subs){
+  const rows=[]; let got=0,poss=0,done=0,late=0;
+  list.forEach(a=>{
+    const sub=subs.find(x=>x.assignmentId===a.id);
+    const has=sub&&sub.mark!=null&&sub.mark!==undefined;
+    if(has){ got+=sub.mark; poss+=(a.totalMark||0); }
+    if(sub){ done++; if(isLate(a.dueDate,sub.submittedAt)) late++; }
+    rows.push([
+      who, a.title||'', a.type||'', a.dueDate||'',
+      sub?fmtDate(sub.submittedAt):'',
+      sub?(isLate(a.dueDate,sub.submittedAt)?'Late':'On time'):'Not done',
+      has?sub.mark:'', a.totalMark||'',
+      has&&a.totalMark?Math.round(sub.mark/a.totalMark*100):''
+    ]);
+  });
+  return {rows,got,poss,done,late};
+}
+const STU_HEAD=['Student','Assignment','Type','Due','Submitted on','Status','Mark','Out of','Score %'];
+
+/* Workbook for one student: a month summary, one sheet per month, then everything. */
+function studentWorkbook(stu,assigns,subs,groupName){
+  const who=(stu&&stu.name)?stu.name:'Student';
+  const months=buildMonths(assigns);
+  const sheets=[];
+
+  /* 1 — Summary: one line per month, so the year is readable at a glance. */
+  const sum=[
+    ['Student:',who],['Email:',(stu&&stu.email)||''],['Class:',groupName||''],['Exported:',fmtDate(Date.now())],
+    [],
+    ['Month','Assignments','Submitted','Not done','Late','Marks','Out of','Score %']
+  ];
+  const HDR=sum.length-1;
+  let gGot=0,gPoss=0,gDone=0,gLate=0;
+  months.forEach(mo=>{
+    const list=assigns.filter(a=>monthKeyOf(a)===mo.key);
+    const r=_stuRows(who,list,subs);
+    gGot+=r.got; gPoss+=r.poss; gDone+=r.done; gLate+=r.late;
+    sum.push([mo.label,list.length,r.done,list.length-r.done,r.late,r.got,r.poss,r.poss?Math.round(r.got/r.poss*100):'']);
+  });
+  sum.push([]);
+  sum.push(['WHOLE YEAR',assigns.length,gDone,assigns.length-gDone,gLate,gGot,gPoss,gPoss?Math.round(gGot/gPoss*100):'']);
+  sheets.push({name:'Summary by month',rows:sum,widths:[20,13,11,10,7,8,8,9],
+               filter:{row:HDR,lastRow:HDR+months.length,cols:8}});
+
+  /* 2 — one sheet per month, newest first. */
+  months.forEach(mo=>{
+    const list=assigns.filter(a=>monthKeyOf(a)===mo.key)
+      .slice().sort((x,y)=>(x.dueDate||'').localeCompare(y.dueDate||''));
+    const r=_stuRows(who,list,subs);
+    const rows=[[who+' — '+mo.label],[],STU_HEAD].concat(r.rows);
+    const lastRow=rows.length-1;
+    rows.push([]);
+    rows.push([who,'MONTH TOTAL','','','','',r.got,r.poss,r.poss?Math.round(r.got/r.poss*100):'']);
+    sheets.push({name:monthShort(mo.key),rows,widths:[20,34,11,12,15,11,8,8,9],
+                 filter:{row:2,lastRow,cols:9}});
+  });
+
+  /* 3 — everything in one list, for sorting across the whole year. */
+  sheets.push(studentSheet(stu,assigns,subs,groupName,'All assignments'));
+  return sheets;
+}
+
+function studentSheet(stu,assigns,subs,groupName,sheetName){
   const who=(stu&&stu.name)?stu.name:'Student';
   /* Her feedback: the name must be visible IN the sheet, not only on the tab. */
   const rows=[
@@ -3289,7 +3489,7 @@ function studentSheet(stu,assigns,subs,groupName){
   const lastRow=rows.length-1;
   rows.push([]);
   rows.push([who,'TOTAL','','','','',got,poss,poss?Math.round(got/poss*100):'']);
-  return {name:who,rows,widths:[20,34,11,12,15,11,8,8,9],
+  return {name:sheetName||who,rows,widths:[20,34,11,12,15,11,8,8,9],
           filter:{row:HDR,lastRow,cols:9}};
 }
 /* Whole class: students down the side, assignments across the top. */
@@ -3318,16 +3518,16 @@ function classSheets(groupName,studs,assigns,allSubs){
   grid.push(['Exported '+fmtDate(Date.now())+' · '+studs.length+' students · '+assigns.length+' assignments']);
   const lastStudentRow=studs.length;   /* header is row 0 */
   const widths=[22,26].concat(assigns.map(()=>13)).concat([8,8,9,11,10,7]);
-  const info=[['Assignment','Type','Due','Out of','Submitted','Not done','Marked','Class average %']];
-  assigns.forEach(a=>{
+  const info=[['Month','Assignment','Type','Due','Out of','Submitted','Not done','Marked','Class average %']];
+  assigns.slice().sort((x,y)=>monthKeyOf(y).localeCompare(monthKeyOf(x))||(y.dueDate||'').localeCompare(x.dueDate||'')).forEach(a=>{
     const subs=allSubs.filter(x=>x.assignmentId===a.id);
     const marked=subs.filter(x=>x.mark!=null&&x.mark!==undefined);
     const avg=(marked.length&&a.totalMark)?Math.round(marked.reduce((t,x)=>t+x.mark,0)/marked.length/a.totalMark*100):'';
-    info.push([a.title||'',a.type||'',a.dueDate||'',a.totalMark||'',subs.length,studs.length-subs.length,marked.length,avg]);
+    info.push([monthLabel(monthKeyOf(a)),a.title||'',a.type||'',a.dueDate||'',a.totalMark||'',subs.length,studs.length-subs.length,marked.length,avg]);
   });
   return [
     {name:groupName||'Class',rows:grid,widths,filter:{row:0,lastRow:lastStudentRow,cols:head.length}},
-    {name:'By assignment',rows:info,widths:[34,11,12,8,11,10,8,16],filter:{row:0,lastRow:assigns.length,cols:8}}
+    {name:'By assignment',rows:info,widths:[18,34,11,12,8,11,10,8,16],filter:{row:0,lastRow:assigns.length,cols:9}}
   ];
 }
 function isDocxData(data,name){
