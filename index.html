@@ -565,7 +565,19 @@ let   _firstSnap = {};      /* key -> true once first snapshot seen */
 function _clone(a){ return JSON.parse(JSON.stringify(a||[])); }
 function _rerender(){ try{ window.dispatchEvent(new Event('zh-data-changed')); }catch(e){} }
 function _loadLocal(){ KEYS.forEach(k=>{ try{ const v=JSON.parse(localStorage.getItem('zh_'+k)); if(Array.isArray(v)) _cache[k]=v; }catch(e){} }); }
-function _saveLocal(k){ try{ localStorage.setItem('zh_'+k, JSON.stringify(_cache[k])); }catch(e){} }
+/* Never copy uploaded files into localStorage — a few PDFs blow past the ~5MB
+   browser quota, the write throws, and NOTHING gets cached from then on. Store the
+   records only; the file bytes live in the cloud and load on demand. */
+function _stripFiles(k,arr){
+  const fields=FILE_FIELDS[k]; if(!fields) return arr;
+  return arr.map(it=>{
+    if(!it||typeof it!=='object') return it;
+    let copy=null;
+    for(const f of fields){ if(typeof it[f]==='string' && it[f].startsWith('data:')){ copy=copy||Object.assign({},it); copy[f]=''; } }
+    return copy||it;
+  });
+}
+function _saveLocal(k){ try{ localStorage.setItem('zh_'+k, JSON.stringify(_stripFiles(k,_cache[k]))); }catch(e){} }
 _loadLocal();
 
 /* ---- Firestore handles ---- */
@@ -625,8 +637,12 @@ function _fromDoc(k,doc){
     const val=doc[f];
     if(val && typeof val==='object' && val.__fileId){
       const fid=val.__fileId; _fieldFileId[k+':'+doc.id+':'+f]=fid;
-      if(_fileBlobs[fid]!=null){ item[f]=_fileBlobs[fid]; }
-      else { item[f]=''; _downloadFile(fid); } /* loads then re-renders */
+      /* LAZY: do NOT download here. Eager loading meant every device pulled down
+         every file ever uploaded on every snapshot — unusable by mid-year, and it
+         put every student's work on every other student's device. The id below
+         lets the UI show the button; FileView fetches the bytes only when opened. */
+      item[f+'Id']=fid;
+      item[f]=(_fileBlobs[fid]!=null)?_fileBlobs[fid]:'';
     }
   }
   return item;
@@ -654,8 +670,14 @@ const DB = {
     meetings:v=>_save('meetings',v), parents:v=>_save('parents',v),
     recordings:v=>_save('recordings',v), sessions:v=>_save('sessions',v),
     settings:v=>_save('settings',v),
-  }
+  },
+  /* Fetch one file's bytes on demand (used by FileView / download buttons). */
+  fetchFile:fid=>_downloadFile(fid),
+  fileBytes:fid=>(fid?_fileBlobs[fid]:null),
 };
+
+/* Does this record have a file, whether or not its bytes are downloaded yet? */
+function hasFile(item,field){ return !!(item&&(item[field]||item[field+'Id'])); }
 
 /* ---- access / lock / deactivate helpers ---- */
 function appSettings(){ return DB.settings()[0]||{}; }
@@ -711,6 +733,7 @@ async function _writeItem(k,item){
     }
     else { base[f]=(val===undefined?null:val); }
   }
+  for(const f of fileFields) delete base[f+'Id'];  /* UI-only hint, never stored */
   const cleaned=_clean(base);
   if(!_shadowEqual(_shadow[k][item.id],cleaned)){
     await colRef(k).doc(String(item.id)).set(cleaned);   /* record appears immediately */
@@ -1521,13 +1544,12 @@ function FullReviewPage({assignId,group,tick,refresh}) {
     if(sub) sub.mark=isNaN(parseFloat(val))?null:parseFloat(val);
     DB.save.submissions(subs); refresh();
   }
-  function uploadCorrection(subId,e){
+  async function uploadCorrection(subId,e){
     const file=e.target.files[0]; if(!file)return;
-    const r=new FileReader(); r.onload=ev=>{
-      const subs=DB.submissions(); const sub=subs.find(s=>s.id===subId);
-      if(sub){sub.correctedFile=file.name;sub.correctedFileData=ev.target.result;}
-      DB.save.submissions(subs); refresh();
-    }; r.readAsDataURL(file);
+    const data=await readUpload(file); if(!data)return;
+    const subs=DB.submissions(); const sub=subs.find(s=>s.id===subId);
+    if(sub){sub.correctedFile=file.name;sub.correctedFileData=data;}
+    DB.save.submissions(subs); refresh();
   }
 
   if(!a) return <div className="empty-state">Assignment not found.</div>;
@@ -1537,6 +1559,7 @@ function FullReviewPage({assignId,group,tick,refresh}) {
     const vsub=DB.submissions().find(x=>x.id===viewingFile.subId)||{};
     const vName=viewingFile.corr?vsub.correctedFile:vsub.fileName;
     const vData=viewingFile.corr?vsub.correctedFileData:vsub.fileData;
+    const vFid=viewingFile.corr?vsub.correctedFileDataId:vsub.fileDataId;
     return (
     <div>
       <button className="a-btn" onClick={()=>setViewingFile(null)} style={{marginBottom:12}}>← Back to students</button>
@@ -1544,14 +1567,8 @@ function FullReviewPage({assignId,group,tick,refresh}) {
         {(studs.find(s=>s.id===vsub.studentId)||{name:'Unknown'}).name}'s {viewingFile.corr?'correction':'submission'}
       </div>
       <div style={{fontSize:12,opacity:0.6,marginBottom:12}}>📎 {vName}{vsub.submittedAt?(' · '+fmtDate(vsub.submittedAt)):''}</div>
-      {vData&&vData.startsWith('data:image')?
-        <img src={vData} alt="file" style={{maxWidth:'100%',border:'2px solid var(--ink)',borderRadius:10}}/>:
-        vData&&isPdfData(vData,vName)?
-        <PdfView data={vData}/>:
-        vData?<iframe src={vData} style={{width:'100%',height:'70vh',border:'2px solid var(--ink)',borderRadius:10}} title="file"/>:
-        <div className="empty-state">⏳ Loading file… if it stays blank, this file was uploaded before the fix and needs to be re-uploaded (correction) or re-submitted by the student.</div>
-      }
-      {vData&&<div style={{marginTop:10}}><a href={vData} download={vName} className="a-btn" style={{textDecoration:'none'}}>⬇ Download</a></div>}
+      <FileView data={vData} name={vName} fileId={vFid}/>
+      {(vData||vFid)&&<div style={{marginTop:10}}><DownloadBtn data={vData} fileId={vFid} name={vName}/></div>}
     </div>
   );
   }
@@ -1613,7 +1630,7 @@ function FullReviewPage({assignId,group,tick,refresh}) {
               <div style={{borderTop:'1.5px dashed #d0cec4',paddingTop:12,display:'flex',gap:10,alignItems:'center',flexWrap:'wrap'}}>
                 {/* view & download */}
                 <button className="a-btn" onClick={()=>setViewingFile({subId:sub.id})} style={{background:'var(--chalk-blue)',color:'white',borderColor:'var(--chalk-blue)',fontSize:12}}>👁 View</button>
-                {sub.fileData&&<a href={sub.fileData} download={sub.fileName||'submission'} className="a-btn" style={{textDecoration:'none',fontSize:12}}>⬇ Download</a>}
+                {hasFile(sub,'fileData')&&<DownloadBtn data={sub.fileData} fileId={sub.fileDataId} name={sub.fileName||'submission'} style={{fontSize:12}}/>}
                 {sub.correctedFile&&<button className="a-btn" onClick={()=>setViewingFile({subId:sub.id,corr:true})} style={{background:'#1F6B43',color:'white',borderColor:'#1F6B43',fontSize:12}}>👁 View correction</button>}
 
                 {/* divider */}
@@ -1671,7 +1688,7 @@ function AssignView({type,groupId,user,onModal,tick,refresh,onReview}) {
                   Total marks: <strong>{a.totalMark}</strong>
                   {a.dueDate&&<> · Due: <strong>{fmtDate(new Date(a.dueDate).getTime())}</strong></>}
                 </div>
-                {a.fileName&&<CorrectionBox name={a.fileName} data={a.fileData} label="Worksheet"/>}
+                {a.fileName&&<CorrectionBox name={a.fileName} data={a.fileData} fileId={a.fileDataId} label="Worksheet"/>}
                 {a.description&&<div style={{fontSize:13,opacity:0.75,marginTop:4}}>{a.description}</div>}
               </div>
               {isT&&(
@@ -1693,7 +1710,7 @@ function AssignView({type,groupId,user,onModal,tick,refresh,onReview}) {
             {!isT&&(
               <>
                 <div className="a-sep"/>
-                {a.correctedFile&&<CorrectionBox name={a.correctedFile} data={a.correctionData} label="Model answers"/>}
+                {a.correctedFile&&<CorrectionBox name={a.correctedFile} data={a.correctionData} fileId={a.correctionDataId} label="Model answers"/>}
                 {mySub?(
                   <div>
                     <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
@@ -1701,8 +1718,8 @@ function AssignView({type,groupId,user,onModal,tick,refresh,onReview}) {
                       {a.dueDate&&(isLate(a.dueDate,mySub.submittedAt)?<span className="tag-late">Late</span>:<span className="tag-ontime">On time</span>)}
                       {mySub.mark!==null&&mySub.mark!==undefined&&<span className="pill pill-blue">Mark: {mySub.mark}/{a.totalMark}</span>}
                     </div>
-                    {mySub.fileName&&<CorrectionBox name={mySub.fileName} data={mySub.fileData} label="Your submitted file"/>}
-                    {mySub.correctedFile&&<CorrectionBox name={mySub.correctedFile} data={mySub.correctedFileData} label="Your correction"/>}
+                    {mySub.fileName&&<CorrectionBox name={mySub.fileName} data={mySub.fileData} fileId={mySub.fileDataId} label="Your submitted file"/>}
+                    {mySub.correctedFile&&<CorrectionBox name={mySub.correctedFile} data={mySub.correctedFileData} fileId={mySub.correctedFileDataId} label="Your correction"/>}
                   </div>
                 ):(
                   <button className="small-btn" onClick={()=>onModal({type:'submitWork',id:a.id})}>📤 Submit work</button>
@@ -1931,7 +1948,7 @@ function AssignForm({groupId,atype,assignId,onDone}) {
   const fileRef=useRef(null);
   const resolvedType=existing?existing.type:atype;
   const lbl=resolvedType==='homework'?'Homework':'Mock Exam';
-  function handleFile(e){ const file=e.target.files[0]; if(!file)return; setF({...f,fileName:file.name}); const r=new FileReader(); r.onload=ev=>setFileData(ev.target.result); r.readAsDataURL(file); }
+  async function handleFile(e){ const file=e.target.files[0]; if(!file)return; setF({...f,fileName:file.name}); const d=await readUpload(file); if(d) setFileData(d); }
   function submit(){
     if(!f.title.trim()||!f.marks){setErr('Please fill in title and total marks.');return;}
     if(existing){
@@ -1970,7 +1987,7 @@ function SubmitForm({assignId,userId,onDone}) {
   const [fileData,setFileData]=useState(null);
   const [err,setErr]=useState('');
   const fileRef=useRef(null);
-  function handleFile(e){ const file=e.target.files[0]; if(!file)return; setFileName(file.name); const r=new FileReader(); r.onload=ev=>setFileData(ev.target.result); r.readAsDataURL(file); }
+  async function handleFile(e){ const file=e.target.files[0]; if(!file)return; setFileName(file.name); const d=await readUpload(file); if(d) setFileData(d); }
   function submit(){
     if(!fileData){setErr('Please upload a file first.');return;}
     const existing=DB.submissions().find(s=>s.assignmentId===assignId&&s.studentId===userId);
@@ -2000,14 +2017,13 @@ function SubsView({assignId,onRefresh}) {
   const [viewingFile,setViewingFile]=useState(null);
   const corrRefs=useRef({});
   function saveMark(subId,val){ const subs=DB.submissions(); const sub=subs.find(s=>s.id===subId); if(sub)sub.mark=isNaN(parseFloat(val))?null:parseFloat(val); DB.save.submissions(subs); onRefresh(); }
-  function viewFile(sub){ if(sub.fileData){ setViewingFile(sub); } }
-  function uploadCorrectionForStudent(subId,e){
+  function viewFile(sub){ if(hasFile(sub,'fileData')){ setViewingFile(sub); } }
+  async function uploadCorrectionForStudent(subId,e){
     const file=e.target.files[0]; if(!file)return;
-    const r=new FileReader(); r.onload=ev=>{
-      const subs=DB.submissions(); const sub=subs.find(s=>s.id===subId);
-      if(sub){sub.correctedFile=file.name;sub.correctedFileData=ev.target.result;}
-      DB.save.submissions(subs); onRefresh();
-    }; r.readAsDataURL(file);
+    const data=await readUpload(file); if(!data)return;
+    const subs=DB.submissions(); const sub=subs.find(s=>s.id===subId);
+    if(sub){sub.correctedFile=file.name;sub.correctedFileData=data;}
+    DB.save.submissions(subs); onRefresh();
   }
   if(allSubs.length===0) return <div className="empty-state">No submissions yet.</div>;
   if(viewingFile) return (
@@ -2015,11 +2031,8 @@ function SubsView({assignId,onRefresh}) {
       <button className="a-btn" onClick={()=>setViewingFile(null)} style={{marginBottom:12}}>← Back to submissions</button>
       <div style={{fontWeight:700,fontSize:15,marginBottom:8}}>Submission from {(studs.find(s=>s.id===viewingFile.studentId)||{name:'Unknown'}).name}</div>
       <div style={{fontSize:12,opacity:0.6,marginBottom:12}}>📎 {viewingFile.fileName} · Submitted {fmtDate(viewingFile.submittedAt)}</div>
-      {viewingFile.fileData&&viewingFile.fileData.startsWith('data:image')?
-        <img src={viewingFile.fileData} alt="submission" style={{maxWidth:'100%',border:'2px solid var(--ink)',borderRadius:10}}/>:
-        viewingFile.fileData?<iframe src={viewingFile.fileData} style={{width:'100%',height:'70vh',border:'2px solid var(--ink)',borderRadius:10}} title="submission"/>:
-        <div className="empty-state">File preview not available</div>
-      }
+      <FileView data={viewingFile.fileData} name={viewingFile.fileName} fileId={viewingFile.fileDataId}/>
+      <div style={{marginTop:10}}><DownloadBtn data={viewingFile.fileData} fileId={viewingFile.fileDataId} name={viewingFile.fileName||'submission'}/></div>
     </div>
   );
   return (
@@ -2037,7 +2050,7 @@ function SubsView({assignId,onRefresh}) {
           {sub.fileName&&<div style={{fontSize:12,marginBottom:8}}>📎 {sub.fileName}</div>}
           <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginBottom:8}}>
             <button className="a-btn" onClick={()=>viewFile(sub)} style={{background:'var(--chalk-blue)',color:'white',borderColor:'var(--chalk-blue)'}}>👁 View file</button>
-            {sub.fileData&&<a href={sub.fileData} download={sub.fileName||'submission'} className="a-btn" style={{textDecoration:'none'}}>⬇ Download</a>}
+            {hasFile(sub,'fileData')&&<DownloadBtn data={sub.fileData} fileId={sub.fileDataId} name={sub.fileName||'submission'}/>}
           </div>
           <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginBottom:8}}>
             <span style={{fontSize:13,fontWeight:600}}>Mark:</span>
@@ -2069,7 +2082,7 @@ function CorrectionForm({assignId,onDone}) {
   const [fileName,setFileName]=useState('');
   const [fileData,setFileData]=useState(null);
   const fileRef=useRef(null);
-  function handleFile(e){ const file=e.target.files[0]; if(!file)return; setFileName(file.name); const r=new FileReader(); r.onload=ev=>setFileData(ev.target.result); r.readAsDataURL(file); }
+  async function handleFile(e){ const file=e.target.files[0]; if(!file)return; setFileName(file.name); const d=await readUpload(file); if(d) setFileData(d); }
   function submit(){ if(!fileData){ alert('Please choose a file first.'); return; } const assigns=DB.assignments(); const a=assigns.find(x=>x.id===assignId); if(a){ a.correctedFile=fileName||'correction'; a.correctionData=fileData; } DB.save.assignments(assigns); onDone(); }
   return (
     <>
@@ -2365,7 +2378,7 @@ function MeetingsView({user,onLive}){
   const fileRef=useRef(null);
   useEffect(()=>{ try{ localStorage.setItem('zh_seen_meet_'+user.id,String(Date.now())); }catch(e){} },[meetings.length]);
   function set(k,v){ setF(p=>Object.assign({},p,{[k]:v})); }
-  function pickFile(e){ const file=e.target.files[0]; if(!file)return; set('attachmentName',file.name); const r=new FileReader(); r.onload=()=>set('attachmentData',r.result); r.readAsDataURL(file); }
+  async function pickFile(e){ const file=e.target.files[0]; if(!file)return; set('attachmentName',file.name); const d=await readUpload(file); if(d) set('attachmentData',d); }
   function dur(s,e){ if(!s||!e)return''; const a=s.split(':').map(Number),b=e.split(':').map(Number); let m=(b[0]*60+b[1])-(a[0]*60+a[1]); if(m<0)m+=1440; return Math.floor(m/60)+'h '+(m%60)+'m'; }
   function save(){
     if(!f.title.trim()||!f.date||!f.start){ alert('Please add at least a title, date and start time.'); return; }
@@ -2443,7 +2456,7 @@ function MeetingsView({user,onLive}){
           </div>
           <div style={{fontSize:13,opacity:0.8,margin:'6px 0'}}>📅 {m.date} · 🕐 {m.start}{m.end?('–'+m.end):''}{m.duration?(' ('+m.duration+')'):''}{m.recurrence&&m.recurrence!=='none'?(' · 🔁 '+m.recurrence):''}</div>
           {m.purpose&&<div style={{fontSize:13,marginBottom:6}}><strong>Agenda:</strong> {m.purpose}</div>}
-          {m.attachmentName&&(m.attachmentData?<a href={m.attachmentData} download={m.attachmentName} style={{fontSize:12}}>📎 {m.attachmentName}</a>:<span style={{fontSize:12,opacity:0.6}}>📎 {m.attachmentName} (loading…)</span>)}
+          {m.attachmentName&&(hasFile(m,'attachmentData')?<DownloadBtn data={m.attachmentData} fileId={m.attachmentDataId} name={m.attachmentName} style={{fontSize:12}} label={'📎 '+m.attachmentName}/>:<span style={{fontSize:12,opacity:0.6}}>📎 {m.attachmentName} (loading…)</span>)}
           {isT&&m.notes&&<div style={{fontSize:13,marginTop:6}}><strong>Notes:</strong> {m.notes}</div>}
           {m.actionItems&&<div style={{fontSize:13,marginTop:4}}><strong>Action items:</strong> {m.actionItems}</div>}
           <div style={{display:'flex',gap:8,flexWrap:'wrap',marginTop:10,alignItems:'center'}}>
@@ -2945,28 +2958,126 @@ function PdfView({data}){
 }
 function isPdfData(data,name){ return (data&&data.startsWith('data:application/pdf'))||(name&&/\.pdf$/i.test(name)); }
 
-function CorrectionBox({name,data,label}){
+/* Shrink photos before upload. A 3–5 MB phone photo becomes ~200–400 KB with no
+   visible difference on screen — the difference between filling the free Firebase
+   plan in a month and staying inside it all year. PDFs/Word pass through untouched. */
+const IMG_MAX_PX = 1600, IMG_QUALITY = 0.72, IMG_SKIP_UNDER = 300*1024;
+function readUpload(file){
+  return new Promise(resolve=>{
+    const r=new FileReader();
+    r.onload=ev=>{
+      const data=ev.target.result;
+      const isImg=/^image\//i.test(file.type||'') && !/svg/i.test(file.type||'');
+      if(!isImg || file.size<=IMG_SKIP_UNDER) return resolve(data);
+      const img=new Image();
+      img.onload=()=>{
+        try{
+          let w=img.width, h=img.height;
+          const scale=Math.min(1, IMG_MAX_PX/Math.max(w,h));
+          w=Math.max(1,Math.round(w*scale)); h=Math.max(1,Math.round(h*scale));
+          const c=document.createElement('canvas'); c.width=w; c.height=h;
+          const ctx=c.getContext('2d'); ctx.fillStyle='#fff'; ctx.fillRect(0,0,w,h);
+          ctx.drawImage(img,0,0,w,h);
+          const out=c.toDataURL('image/jpeg',IMG_QUALITY);
+          resolve(out && out.length < data.length ? out : data);
+        }catch(e){ resolve(data); }
+      };
+      img.onerror=()=>resolve(data);
+      img.src=data;
+    };
+    r.onerror=()=>resolve(null);
+    r.readAsDataURL(file);
+  });
+}
+
+/* Chrome refuses to render a data: URL inside an iframe — that is why "View file"
+   used to show a blank page or silently download instead. Convert to a blob: URL,
+   which browsers DO allow, and route PDFs through PdfView (PDF.js) instead. */
+function dataUrlToBlobUrl(d){
+  try{
+    const c=d.indexOf(','); if(c<0) return null;
+    const mime=(d.slice(0,c).match(/data:([^;]+)/)||[null,'application/octet-stream'])[1];
+    const bin=atob(d.slice(c+1));
+    const u=new Uint8Array(bin.length); for(let i=0;i<bin.length;i++) u[i]=bin.charCodeAt(i);
+    return URL.createObjectURL(new Blob([u],{type:mime}));
+  }catch(e){ return null; }
+}
+
+/* One shared viewer for every uploaded file: images inline, PDFs via PDF.js,
+   anything else gets Download + Open-in-new-tab instead of a blank iframe. */
+function FileView({data,name,fileId}){
+  /* Files load only when someone actually opens one. */
+  const [fetched,setFetched]=useState(null);
+  useEffect(()=>{
+    let dead=false;
+    if(!data&&fileId){ (async()=>{ const b=await DB.fetchFile(fileId); if(!dead) setFetched(b||''); })(); }
+    else setFetched(null);
+    return ()=>{ dead=true; };
+  },[data,fileId]);
+  const real=data||fetched||'';
+  const isImg=!!(real&&real.startsWith('data:image'));
+  const isPdf=!!isPdfData(real,name);
+  const [blobUrl,setBlobUrl]=useState(null);
+  useEffect(()=>{
+    if(!real||isImg||isPdf){ setBlobUrl(null); return; }
+    const u=dataUrlToBlobUrl(real); setBlobUrl(u);
+    return ()=>{ if(u) try{ URL.revokeObjectURL(u); }catch(e){} };
+  },[real,isImg,isPdf]);
+  const data_=real;
+  if(!data_&&fileId) return <div className="empty-state">⏳ Opening file…</div>;
+  if(!data_) return <div className="empty-state">⏳ Loading file… if it stays blank, this file was uploaded before the fix and needs to be re-uploaded (correction) or re-submitted by the student.</div>;
+  if(isImg) return <img src={data_} alt={name||'file'} style={{maxWidth:'100%',border:'2px solid var(--ink)',borderRadius:10}}/>;
+  if(isPdf) return <PdfView data={data_}/>;
+  const ext=((name||'').split('.').pop()||'').toUpperCase();
+  return (
+    <div style={{marginTop:10,padding:'14px 16px',background:'#FFF4E5',border:'2px solid #E8623D',borderRadius:10}}>
+      <div style={{fontWeight:700,fontSize:14,marginBottom:4}}>{ext?(ext+' files'):'This file type'} can’t be displayed inside the browser.</div>
+      <div style={{fontSize:13,marginBottom:10,opacity:0.8}}>The file itself is fine — open it with one of these:</div>
+      <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+        <a className="a-btn" href={data_} download={name||'file'} style={{textDecoration:'none'}}>⬇ Download</a>
+        {blobUrl&&<a className="a-btn" href={blobUrl} target="_blank" rel="noreferrer" style={{textDecoration:'none'}}>↗ Open in a new tab</a>}
+      </div>
+    </div>
+  );
+}
+
+/* Download that works whether or not the bytes are in memory yet. */
+function DownloadBtn({data,fileId,name,className,style,label}){
+  const [busy,setBusy]=useState(false);
+  const cls=className||'a-btn';
+  const st=Object.assign({textDecoration:'none'},style||{});
+  if(data) return <a href={data} download={name||'file'} className={cls} style={st}>{label||'\u2b07 Download'}</a>;
+  if(!fileId) return null;
+  return <button className={cls} style={st} disabled={busy} onClick={async()=>{
+    setBusy(true);
+    const b=await DB.fetchFile(fileId);
+    setBusy(false);
+    if(!b){ alert('Could not load this file \u2014 check your connection and try again.'); return; }
+    const u=dataUrlToBlobUrl(b);
+    if(!u){ alert('Could not open this file.'); return; }
+    const a=document.createElement('a'); a.href=u; a.download=name||'file';
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(()=>{ try{ URL.revokeObjectURL(u); }catch(e){} },4000);
+  }}>{busy?'\u23f3 Loading\u2026':(label||'\u2b07 Download')}</button>;
+}
+
+function CorrectionBox({name,data,label,fileId}){
   const [show,setShow]=useState(false);
   const [slow,setSlow]=useState(false);
-  const isImg=data&&data.startsWith('data:image');
-  const isPdf=isPdfData(data,name);
-  useEffect(()=>{ if(!data){ const t=setTimeout(()=>setSlow(true),9000); return ()=>clearTimeout(t); } setSlow(false); },[data]);
+  const ready=!!(data||fileId);
+  useEffect(()=>{ if(!ready){ const t=setTimeout(()=>setSlow(true),9000); return ()=>clearTimeout(t); } setSlow(false); },[ready]);
   return (
     <div style={{marginTop:8,padding:'10px 14px',background:'#DCEFE3',border:'2px solid #22c55e',borderRadius:10}}>
       <div style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
         <span style={{fontSize:13,fontWeight:700,color:'#1F6B43'}}>📄 {label||'Correction'}: {name}</span>
-        {data?(<>
+        {ready?(<>
           <button className="a-btn" onClick={()=>setShow(s=>!s)} style={{fontSize:11,padding:'4px 10px'}}>{show?'✕ Hide':'👁 View'}</button>
-          <a href={data} download={name} target="_blank" rel="noreferrer" className="a-btn" style={{textDecoration:'none',fontSize:11,padding:'4px 10px',background:'#1F6B43',color:'white',borderColor:'#1F6B43'}}>⬇ Download</a>
+          <DownloadBtn data={data} fileId={fileId} name={name} style={{fontSize:11,padding:'4px 10px',background:'#1F6B43',color:'white',borderColor:'#1F6B43'}}/>
         </>):(slow
           ? <span style={{fontSize:11,color:'#b45309'}}>⚠ This file couldn't load — it may need to be uploaded again.</span>
           : <span style={{fontSize:11,opacity:0.7}}>⏳ Loading…</span>)}
       </div>
-      {show&&data&&(isImg
-        ? <img src={data} alt="file" style={{maxWidth:'100%',marginTop:10,borderRadius:8,border:'1px solid #22c55e'}}/>
-        : isPdf
-        ? <PdfView data={data}/>
-        : <iframe src={data} style={{width:'100%',height:'70vh',marginTop:10,border:'1px solid #22c55e',borderRadius:8,background:'#fff'}} title="file"/>)}
+      {show&&ready&&<FileView data={data} name={name} fileId={fileId}/>}
     </div>
   );
 }
