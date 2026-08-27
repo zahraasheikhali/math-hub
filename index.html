@@ -520,6 +520,29 @@ function isLate(due,subAt) { if(!due||!subAt) return false; const end=new Date(d
 /* ═══════════ PASSWORDS ═══════════
    There is no mail service, so "forgot password" files a request the teacher
    sees; she sets a new one and tells the person (WhatsApp is right there). */
+/* Self-service reset: email + the phone number they registered with must both
+   match, then they set a new password themselves. No teacher, no waiting. */
+function findAccountByEmail(email){
+  const e=String(email||'').trim().toLowerCase();
+  if(!e) return null;
+  const stu=DB.students().find(x=>(x.email||'').toLowerCase()===e);
+  if(stu) return {kind:'student',rec:stu};
+  const par=DB.parents().find(x=>(x.email||'').toLowerCase()===e);
+  if(par) return {kind:'parent',rec:par};
+  return null;
+}
+function resetWithPhone(email,phone,newPass){
+  const found=findAccountByEmail(email);
+  if(!found) return 'nouser';
+  const have=normPhone(found.rec.phone||found.rec.phoneRaw||'');
+  if(!have) return 'nophone';
+  if(normPhone(phone)!==have) return 'nomatch';
+  if(String(newPass||'').length<6) return 'short';
+  if(found.kind==='student'){ const all=DB.students(); const r=all.find(x=>x.id===found.rec.id); r.pass=newPass; DB.save.students(all); }
+  else { const all=DB.parents(); const r=all.find(x=>x.id===found.rec.id); r.pass=newPass; DB.save.parents(all); }
+  clearPwRequest(found.rec.email);
+  return 'ok';
+}
 function pwRequests(){ return (appSettings().pwRequests)||[]; }
 function addPwRequest(email){
   const e=String(email||'').trim().toLowerCase();
@@ -1190,11 +1213,25 @@ function LoginPage({onSuccess,onBack}) {
   const [f,setF]=useState({email:'',pass:'',name:'',childEmail:'',phone:''});
   const [forgot,setForgot]=useState(false);
   const [fMsg,setFMsg]=useState('');
-  function askReset(){
-    setFMsg('');
+  const [fOk,setFOk]=useState(false);
+  const [rPhone,setRPhone]=useState('');
+  const [rA,setRA]=useState(''); const [rB,setRB]=useState('');
+  function doSelfReset(){
+    setFMsg(''); setFOk(false);
     if(!f.email.trim()){ setFMsg('Please type the email you registered with.'); return; }
-    if(addPwRequest(f.email)) setFMsg('✓ Done. Your teacher can now give you a new password — please contact her.');
-    else setFMsg('We could not find an account with that email. Check the spelling, or ask your teacher.');
+    if(!rPhone.trim()){ setFMsg('Please type your WhatsApp number.'); return; }
+    if(!rA||!rB){ setFMsg('Please type your new password twice.'); return; }
+    if(rA!==rB){ setFMsg('The two new passwords do not match.'); return; }
+    const r=resetWithPhone(f.email,rPhone,rA);
+    if(r==='ok'){ setFOk(true); setFMsg('✓ Your password has been changed. You can sign in with it now.'); setRPhone(''); setRA(''); setRB(''); return; }
+    if(r==='nouser'){ setFMsg('We could not find an account with that email. Check the spelling.'); return; }
+    if(r==='nophone'){
+      addPwRequest(f.email);
+      setFMsg('This account has no phone number saved, so we cannot check it is you. Your teacher has been told and will help.');
+      return;
+    }
+    if(r==='nomatch'){ setFMsg('That number does not match the one saved for this account. Try the full number with the country code, e.g. +974 5555 1234.'); return; }
+    if(r==='short'){ setFMsg('Please use at least 6 characters for the new password.'); return; }
   }
 
   function doTeacherLogin() {
@@ -1267,16 +1304,19 @@ function LoginPage({onSuccess,onBack}) {
             <button className="login-btn" onClick={doParentLogin}>Sign in</button>
             {forgot?(
               <div style={{marginTop:8,padding:'10px 12px',background:'#FFF4E5',border:'2px solid #E8623D',borderRadius:10}}>
-                <div style={{fontSize:12,fontWeight:700,marginBottom:6}}>Forgotten your password?</div>
-                <div style={{fontSize:12,opacity:0.8,marginBottom:8}}>Type the email you registered with. Your teacher will be told, and she will give you a new password.</div>
-                <input type="email" value={f.email} onChange={e=>setF({...f,email:e.target.value})} placeholder="your email" style={{width:'100%',padding:'7px 10px',border:'2px solid var(--ink)',borderRadius:7,fontSize:13,fontFamily:'inherit'}}/>
-                {fMsg&&<div style={{fontSize:12,fontWeight:700,marginTop:6}}>{fMsg}</div>}
+                <div style={{fontSize:12,fontWeight:700,marginBottom:4}}>Set a new password</div>
+                <div style={{fontSize:12,opacity:0.8,marginBottom:8}}>To prove it is you, type the email and the WhatsApp number you registered with. Then choose a new password.</div>
+                <input type="email" value={f.email} onChange={e=>setF({...f,email:e.target.value})} placeholder="your email" style={{width:'100%',padding:'7px 10px',border:'2px solid var(--ink)',borderRadius:7,fontSize:13,fontFamily:'inherit',marginBottom:6}}/>
+                <input type="tel" value={rPhone} onChange={e=>setRPhone(e.target.value)} placeholder="your WhatsApp number, e.g. +974 5555 1234" style={{width:'100%',padding:'7px 10px',border:'2px solid var(--ink)',borderRadius:7,fontSize:13,fontFamily:'inherit',marginBottom:6}}/>
+                <input type="password" value={rA} onChange={e=>setRA(e.target.value)} placeholder="new password (at least 6 characters)" style={{width:'100%',padding:'7px 10px',border:'2px solid var(--ink)',borderRadius:7,fontSize:13,fontFamily:'inherit',marginBottom:6}}/>
+                <input type="password" value={rB} onChange={e=>setRB(e.target.value)} onKeyDown={e=>e.key==='Enter'&&doSelfReset()} placeholder="type the new password again" style={{width:'100%',padding:'7px 10px',border:'2px solid var(--ink)',borderRadius:7,fontSize:13,fontFamily:'inherit'}}/>
+                {fMsg&&<div style={{fontSize:12,fontWeight:700,marginTop:7,color:fOk?'#1F6B43':'#b91c1c'}}>{fMsg}</div>}
                 <div style={{display:'flex',gap:6,marginTop:8}}>
-                  <button className="a-btn" style={{fontSize:12}} onClick={askReset}>Tell my teacher</button>
-                  <button className="a-btn" style={{fontSize:12}} onClick={()=>{setForgot(false);setFMsg('');}}>Cancel</button>
+                  {!fOk&&<button className="a-btn" style={{fontSize:12,background:'var(--green-deep)',color:'#fff',borderColor:'var(--green-deep)'}} onClick={doSelfReset}>Save new password</button>}
+                  <button className="a-btn" style={{fontSize:12}} onClick={()=>{setForgot(false);setFMsg('');setFOk(false);setRPhone('');setRA('');setRB('');}}>{fOk?'Back to sign in':'Cancel'}</button>
                 </div>
               </div>
-            ):<div className="login-switch" style={{marginTop:6}}><span onClick={()=>{setForgot(true);setErr('');}}>Forgotten your password?</span></div>}
+            ):<div className="login-switch" style={{marginTop:6}}><span onClick={()=>{setForgot(true);setErr('');setFMsg('');}}>Forgotten your password?</span></div>}
             <div className="login-switch">No account? <span onClick={()=>{setMode('register');setErr('');}}>Register here</span></div>
           </>
         )}
@@ -1310,16 +1350,19 @@ function LoginPage({onSuccess,onBack}) {
             <button className="login-btn" onClick={doStudentLogin}>Sign in</button>
             {forgot?(
               <div style={{marginTop:8,padding:'10px 12px',background:'#FFF4E5',border:'2px solid #E8623D',borderRadius:10}}>
-                <div style={{fontSize:12,fontWeight:700,marginBottom:6}}>Forgotten your password?</div>
-                <div style={{fontSize:12,opacity:0.8,marginBottom:8}}>Type the email you registered with. Your teacher will be told, and she will give you a new password.</div>
-                <input type="email" value={f.email} onChange={e=>setF({...f,email:e.target.value})} placeholder="your email" style={{width:'100%',padding:'7px 10px',border:'2px solid var(--ink)',borderRadius:7,fontSize:13,fontFamily:'inherit'}}/>
-                {fMsg&&<div style={{fontSize:12,fontWeight:700,marginTop:6}}>{fMsg}</div>}
+                <div style={{fontSize:12,fontWeight:700,marginBottom:4}}>Set a new password</div>
+                <div style={{fontSize:12,opacity:0.8,marginBottom:8}}>To prove it is you, type the email and the WhatsApp number you registered with. Then choose a new password.</div>
+                <input type="email" value={f.email} onChange={e=>setF({...f,email:e.target.value})} placeholder="your email" style={{width:'100%',padding:'7px 10px',border:'2px solid var(--ink)',borderRadius:7,fontSize:13,fontFamily:'inherit',marginBottom:6}}/>
+                <input type="tel" value={rPhone} onChange={e=>setRPhone(e.target.value)} placeholder="your WhatsApp number, e.g. +974 5555 1234" style={{width:'100%',padding:'7px 10px',border:'2px solid var(--ink)',borderRadius:7,fontSize:13,fontFamily:'inherit',marginBottom:6}}/>
+                <input type="password" value={rA} onChange={e=>setRA(e.target.value)} placeholder="new password (at least 6 characters)" style={{width:'100%',padding:'7px 10px',border:'2px solid var(--ink)',borderRadius:7,fontSize:13,fontFamily:'inherit',marginBottom:6}}/>
+                <input type="password" value={rB} onChange={e=>setRB(e.target.value)} onKeyDown={e=>e.key==='Enter'&&doSelfReset()} placeholder="type the new password again" style={{width:'100%',padding:'7px 10px',border:'2px solid var(--ink)',borderRadius:7,fontSize:13,fontFamily:'inherit'}}/>
+                {fMsg&&<div style={{fontSize:12,fontWeight:700,marginTop:7,color:fOk?'#1F6B43':'#b91c1c'}}>{fMsg}</div>}
                 <div style={{display:'flex',gap:6,marginTop:8}}>
-                  <button className="a-btn" style={{fontSize:12}} onClick={askReset}>Tell my teacher</button>
-                  <button className="a-btn" style={{fontSize:12}} onClick={()=>{setForgot(false);setFMsg('');}}>Cancel</button>
+                  {!fOk&&<button className="a-btn" style={{fontSize:12,background:'var(--green-deep)',color:'#fff',borderColor:'var(--green-deep)'}} onClick={doSelfReset}>Save new password</button>}
+                  <button className="a-btn" style={{fontSize:12}} onClick={()=>{setForgot(false);setFMsg('');setFOk(false);setRPhone('');setRA('');setRB('');}}>{fOk?'Back to sign in':'Cancel'}</button>
                 </div>
               </div>
-            ):<div className="login-switch" style={{marginTop:6}}><span onClick={()=>{setForgot(true);setErr('');}}>Forgotten your password?</span></div>}
+            ):<div className="login-switch" style={{marginTop:6}}><span onClick={()=>{setForgot(true);setErr('');setFMsg('');}}>Forgotten your password?</span></div>}
             <div className="login-switch">No account? <span onClick={()=>{setMode('register');setErr('');}}>Register here</span></div>
           </>
         )}
