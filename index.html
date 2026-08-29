@@ -3279,7 +3279,7 @@ function buildParentMonthlyMessage(parent,child,teacherName){
   L.push('The report for '+monthLabel(mk)+' is now complete for '+name+'.');
   L.push('');
   L.push('This month: '+assigns.length+' piece'+(assigns.length===1?'':'s')+' of work set, '+done+' handed in'+(late?(', '+late+' late'):''));
-  if(poss) L.push('Marks: '+got+' out of '+poss+'  ('+Math.round(got/poss*100)+'%)');
+  if(poss) L.push('Average score: '+Math.round(got/poss*100)+'%');
   if(missing.length) L.push('Not handed in: '+missing.map(a=>a.title).join(', '));
   L.push('');
   L.push('Please open the Maths Hub to see the full month report, the marked work and the model answers.');
@@ -3299,7 +3299,7 @@ function buildParentMessage(parent,child,teacherName){
     L.push('New this week:');
     s.newWork.slice(0,6).forEach(a=>L.push('• '+(a.type==='mock'?'Mock: ':'Homework: ')+a.title+(a.dueDate?(' — due '+fmtDue(a.dueDate)):'')));
   }
-  if(s.pct!==null) L.push('', 'Marks so far: '+s.pct+'%');
+  if(s.pct!==null) L.push('', 'Average score: '+s.pct+'%');
   if(s.missing.length) L.push('', 'Still not handed in: '+s.missing.map(a=>a.title).join(', '));
   L.push('');
   L.push('Please log in to see the full details and the marked work.');
