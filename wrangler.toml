@@ -8,4 +8,4 @@ binding = "ASSETS"
 
 [[kv_namespaces]]
 binding = "PUSH_SUBS"
-id = "PASTE_YOUR_KV_NAMESPACE_ID_HERE"
+id = "2bcca653989f47ca955175cb82b3025a"
