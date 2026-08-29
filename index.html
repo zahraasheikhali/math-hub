@@ -582,6 +582,14 @@ function weekKey(ts){
   const week=Math.ceil(((d-new Date(y,0,1))/86400000+1)/7);
   return y+'-W'+String(week).padStart(2,'0');
 }
+/* The last Thursday of the month — when the monthly report nudge is due. */
+function isLastThursdayOfMonth(d){
+  const x=d||new Date();
+  if(x.getDay()!==4) return false;
+  const probe=new Date(x); probe.setDate(probe.getDate()+7);
+  return probe.getMonth()!==x.getMonth();
+}
+function monthKeyNow(){ const d=new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'); }
 function weekStartTs(){
   const d=new Date(); d.setHours(0,0,0,0);
   d.setDate(d.getDate()-((d.getDay()+6)%7));               /* Monday */
@@ -894,6 +902,15 @@ function appSettings(){ return DB.settings()[0]||{}; }
 function saveSetting(patch){ const cur=DB.settings()[0]||{}; DB.save.settings([Object.assign({id:'app'},cur,patch)]); }
 function _accessId(user){ return user.role==='parent'?user.childId:user.id; }
 function isPersonUnlocked(user){ if(user.role==='teacher') return true; const s=DB.students().find(x=>x.id===_accessId(user)); return !!(s&&s.unlocked); }
+/* Year 9 classes: eBook only, no Lessons. Marked with a tick box on the group,
+   so it works whatever the class is called (9A, 9B, Year 9 red…). */
+function isEbookOnlyGroup(g){ return !!(g&&g.ebookOnly); }
+function userIsEbookOnly(user){
+  if(!user||user.role==='teacher') return false;
+  const sid=user.role==='parent'?user.childId:user.id;
+  const mine=DB.groups().filter(g=>(g.students||[]).includes(sid));
+  return mine.length>0 && mine.every(isEbookOnlyGroup);
+}
 function itemLocked(index,user,kind){ /* kind: 'lessons' | 'ebook' */
   if(user.role==='teacher') return false;
   if(index<3) return false;                 /* first three are always free */
@@ -1477,7 +1494,7 @@ function PortalApp({user,onLogout,topics,progress,toggleDone,addQuestion,deleteQ
         <div className="p-nav-label">Navigation</div>
         <div className={"p-nav-item "+(view==='home'?'active':'')} onClick={openHome}>🏠 Home</div>
         <div className={"p-nav-item "+(view==='ebook'?'active':'')} onClick={()=>{setView('ebook');setEbookTopic(null);setDotsOpen(null);}}>📖 eBook</div>
-        <div className={"p-nav-item "+(view==='lessons'?'active':'')} onClick={()=>{setView('lessons');setDotsOpen(null);}}>📊 Lessons</div>
+        {!userIsEbookOnly(user)&&<div className={"p-nav-item "+(view==='lessons'?'active':'')} onClick={()=>{setView('lessons');setDotsOpen(null);}}>📊 Lessons</div>}
         <div className={"p-nav-item "+(view==='posts'?'active':'')} onClick={()=>{setView('posts');setDotsOpen(null);}}>📌 Announcements</div>
         <div className={"p-nav-item "+(view==='recordings'?'active':'')} onClick={()=>{setView('recordings');setDotsOpen(null);}}>🎬 Recordings</div>
         {isT&&<div className={"p-nav-item "+(view==='parents'?'active':'')} onClick={()=>{setView('parents');setDotsOpen(null);}}>👪 Parents</div>}
@@ -1634,8 +1651,10 @@ function PortalApp({user,onLogout,topics,progress,toggleDone,addQuestion,deleteQ
       );
     }
 
-    const tabs=isT?['homework','mock','track','members','chat']:['homework','mock','track','chat'];
-    const lbls={homework:'Homework',mock:'Mock Exam',track:'Track',members:'👥 Members',chat:'Chat'};
+    const eb=isEbookOnlyGroup(group);
+    const tabs=(isT?['homework','mock','track','members','chat']:['homework','mock','track','chat'])
+      .concat(eb?['notices']:[]);
+    const lbls={homework:'Homework',mock:'Mock Exam',track:'Track',members:'👥 Members',chat:'Chat',notices:'📣 Class notices'};
     const groupStudents=DB.students().filter(s=>(group.students||[]).includes(s.id));
     return (
       <div className="p-main">
@@ -1643,6 +1662,17 @@ function PortalApp({user,onLogout,topics,progress,toggleDone,addQuestion,deleteQ
           <div style={{display:'flex',alignItems:'center',gap:6}}>
             <div className="p-topbar-title">{group.name}</div>
             {isT&&<button className="a-btn" onClick={()=>renameGroup(group)} style={{fontSize:11,padding:'4px 9px'}}>✏️ Rename</button>}
+            {isT&&<button className="a-btn" onClick={()=>{
+              const all=DB.groups(); const r=all.find(x=>x.id===group.id);
+              if(!r) return;
+              const turnOn=!r.ebookOnly;
+              if(!confirm(turnOn
+                ? 'Make “'+r.name+'” a Year 9 class?\n\nIts students will no longer see the Lessons slides — only the eBook — and the class gets a Class notices tab.'
+                : 'Turn off Year 9 for “'+r.name+'”?\n\nIts students will get the Lessons slides back.')) return;
+              r.ebookOnly=turnOn; DB.save.groups(all); refresh();
+            }} style={{fontSize:11,padding:'4px 9px',background:group.ebookOnly?'var(--green-deep)':'',color:group.ebookOnly?'#fff':'',borderColor:group.ebookOnly?'var(--green-deep)':''}}>
+              {group.ebookOnly?'📗 Year 9 (eBook only)':'📗 Make Year 9'}
+            </button>}
             {isT&&<button className="a-btn danger" onClick={()=>deleteGroup(group.id)} style={{fontSize:11,padding:'4px 9px'}}>🗑 Delete</button>}
           </div>
           <div className="p-tabs">{tabs.map(t=><button key={t} className={"p-tab "+(subView===t?'active':'')} onClick={()=>{setSubView(t);setReviewAssignId(null);setDetailStudentId(null);}}>{lbls[t]}</button>)}</div>
@@ -1651,6 +1681,7 @@ function PortalApp({user,onLogout,topics,progress,toggleDone,addQuestion,deleteQ
           {subView==='homework'&&<AssignView type="homework" groupId={groupId} user={user} onModal={setModal} tick={tick} refresh={refresh} onReview={setReviewAssignId}/>}
           {subView==='mock'&&<AssignView type="mock" groupId={groupId} user={user} onModal={setModal} tick={tick} refresh={refresh} onReview={setReviewAssignId}/>}
           {subView==='track'&&<TrackView groupId={groupId} user={user} onModal={setModal} onDetail={setDetailStudentId} tick={tick}/>}
+          {subView==='notices'&&<GroupNotices groupId={groupId} user={user} refresh={refresh}/>}
           {subView==='members'&&isT&&(
             <div>
               <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12,flexWrap:'wrap',gap:8}}>
@@ -1816,7 +1847,7 @@ function PortalApp({user,onLogout,topics,progress,toggleDone,addQuestion,deleteQ
   return (
     <div className="portal-layout" onClick={()=>dotsOpen&&setDotsOpen(null)}>
       {sidebar}
-      {view==='home'?portalHome():view==='ebook'?ebookView():view==='lessons'?<LessonsView user={user} onManageAccess={()=>setView('access')}/>:view==='access'?<AccessView/>:view==='posts'?postsView():view==='recordings'?recordingsView():view==='parents'?<TeacherParentsView/>:view==='registrations'?<RegistrationsView/>:groupView()}
+      {view==='home'?portalHome():view==='ebook'?ebookView():view==='lessons'?(userIsEbookOnly(user)?<div className="p-main"><div className="p-topbar"><div className="p-topbar-title">📊 Lessons</div></div><div className="p-page"><div className="empty-state">Your class uses the eBook rather than the lesson slides. Open 📖 eBook from the menu.</div></div></div>:<LessonsView user={user} onManageAccess={()=>setView('access')}/>):view==='access'?<AccessView/>:view==='posts'?postsView():view==='recordings'?recordingsView():view==='parents'?<TeacherParentsView/>:view==='registrations'?<RegistrationsView/>:groupView()}
       {renderModal()}
       {manageStudentsOverlay}
       {assignStudentOverlay}
@@ -2116,6 +2147,48 @@ function TrackView({groupId,user,onModal,onDetail,tick}) {
 }
 
 /* ═══════════ CHAT VIEW ═══════════ */
+/* Class notices — a noticeboard for one class. Year 9 groups get this in place
+   of the lesson slides, so there is somewhere to tell them what to study. */
+function GroupNotices({groupId,user,refresh}){
+  const isT=user.role==='teacher';
+  const [txt,setTxt]=useState('');
+  const list=DB.posts().filter(p=>p.groupId===groupId).sort((a,b)=>(b.at||0)-(a.at||0));
+  function post(){
+    const t=txt.trim(); if(!t) return;
+    const all=DB.posts();
+    all.push({id:uid(),groupId,text:t,at:now(),by:'teacher'});
+    DB.save.posts(all); setTxt(''); if(refresh) refresh();
+  }
+  function del(id){
+    if(!confirm('Delete this notice?')) return;
+    DB.save.posts(DB.posts().filter(p=>p.id!==id)); if(refresh) refresh();
+  }
+  return (
+    <div>
+      <div style={{fontFamily:'Georgia,serif',fontWeight:700,fontSize:17,color:'var(--green-deep)',marginBottom:6}}>📣 Class notices</div>
+      <div style={{fontSize:13,opacity:0.75,marginBottom:14}}>Notices for this class only. Everyone in the class sees them when they open the group.</div>
+      {isT&&(
+        <div style={{background:'white',border:'2px solid var(--ink)',borderRadius:12,padding:'12px 14px',boxShadow:'3px 3px 0 var(--ink)',marginBottom:16}}>
+          <textarea value={txt} onChange={e=>setTxt(e.target.value)} rows={3}
+            placeholder="e.g. This week revise chapter 4 of the eBook, pages 60–72."
+            style={{width:'100%',padding:'9px 11px',border:'2px solid var(--ink)',borderRadius:8,fontSize:14,fontFamily:'inherit',resize:'vertical'}}/>
+          <button className="small-btn" style={{marginTop:8}} onClick={post}>📣 Post notice</button>
+        </div>
+      )}
+      {list.length===0&&<div className="empty-state">No notices yet{isT?' — write the first one above.':'.'}</div>}
+      {list.map(n=>(
+        <div key={n.id} className="a-card" style={{marginBottom:10}}>
+          <div style={{display:'flex',gap:10,alignItems:'flex-start'}}>
+            <div style={{flex:1,whiteSpace:'pre-wrap',fontSize:14}}>{n.text}</div>
+            {isT&&<button className="a-btn danger" style={{fontSize:11,padding:'3px 8px'}} onClick={()=>del(n.id)}>🗑</button>}
+          </div>
+          <div style={{fontSize:11,opacity:0.6,marginTop:6}}>{fmtDate(n.at)}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 /* ═══════════ CHAT ATTACHMENTS (photos, PDFs, Word — any chat) ═══════════ */
 const CHAT_ACCEPT='image/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt';
 const CHAT_MAX_MB=12;
@@ -2330,8 +2403,19 @@ function ChatView({groupId,user,chatTarget,setChatTarget,tick,refresh}) {
 /* ═══════════ MODAL FORM COMPONENTS ═══════════ */
 function CreateGroupForm({onDone}) {
   const [name,setName]=useState('');
-  function submit(){ if(!name.trim())return; const g=DB.groups(); g.push({id:uid(),name:name.trim(),students:[],createdAt:now()}); DB.save.groups(g); onDone(); }
-  return <><div className="mfield"><label>Group name</label><input autoFocus value={name} onChange={e=>setName(e.target.value)} onKeyDown={e=>e.key==='Enter'&&submit()} placeholder="e.g. Grade 10A Maths"/></div><button className="mbtn" onClick={submit}>Create group</button></>;
+  const [eb,setEb]=useState(false);
+  function submit(){ if(!name.trim())return; const g=DB.groups(); g.push({id:uid(),name:name.trim(),students:[],ebookOnly:eb,createdAt:now()}); DB.save.groups(g); onDone(); }
+  return <>
+    <div className="mfield"><label>Group name</label><input autoFocus value={name} onChange={e=>setName(e.target.value)} onKeyDown={e=>e.key==='Enter'&&submit()} placeholder="e.g. Grade 10A Maths"/></div>
+    <div className="mfield">
+      <label style={{display:'flex',alignItems:'center',gap:8,cursor:'pointer'}}>
+        <input type="checkbox" checked={eb} onChange={e=>setEb(e.target.checked)} style={{width:16,height:16}}/>
+        <span>Year 9 class — eBook only, no Lessons</span>
+      </label>
+      <div style={{fontSize:11,opacity:0.65,marginTop:3}}>Students in this class can use the eBook but cannot open the IGCSE lesson slides. They get their own Class notices tab instead.</div>
+    </div>
+    <button className="mbtn" onClick={submit}>Create group</button>
+  </>;
 }
 
 function AddStudentForm({groupId,onRefresh}) {
@@ -2639,7 +2723,7 @@ function StudentDetail({studentId,groupId,fullPage}) {
 /* ═══════════ POSTS / ANNOUNCEMENTS ═══════════ */
 function PostsView({user}){
   const isT=user.role==='teacher';
-  const posts=DB.posts().slice().sort((a,b)=>b.at-a.at);
+  const posts=DB.posts().filter(p=>!p.groupId).slice().sort((a,b)=>b.at-a.at);   /* group notices live in their own class tab */
   const [text,setText]=useState('');
   const [title,setTitle]=useState('');
   const [editId,setEditId]=useState(null);
@@ -2757,17 +2841,21 @@ function Notifications({user,onOpenPosts,onOpenGroup,onOpenMeetings,onAddStudent
     });
   } else if(isParent){
     const seenPost=_seen(user.id,'posts');
-    DB.posts().filter(p=>(p.at||0)>seenPost).forEach(p=>items.push({t:p.at,txt:'📌 New announcement: '+(p.title||String(p.text||'').slice(0,40)),go:onOpenPosts}));
+    DB.posts().filter(p=>(p.at||0)>seenPost&&!p.groupId).forEach(p=>items.push({t:p.at,txt:'📌 New announcement: '+(p.title||String(p.text||'').slice(0,40)),go:onOpenPosts}));
     const seenTd=_seen(user.id,'ptmsg');
     DB.messages().filter(m=>(m.parentId===user.id||m.parentBroadcast)&&m.from==='teacher'&&(m.at||0)>seenTd).forEach(m=>items.push({t:m.at,txt:(m.parentBroadcast?'📢 ':'💬 ')+'Teacher: '+String(m.text||'').slice(0,40),go:onOpenChat}));
   } else {
     const seenPost=_seen(user.id,'posts');
-    DB.posts().filter(p=>(p.at||0)>seenPost).forEach(p=>items.push({t:p.at,txt:'📌 New announcement: '+(p.title||String(p.text||'').slice(0,40)),go:onOpenPosts}));
+    DB.posts().filter(p=>(p.at||0)>seenPost&&!p.groupId).forEach(p=>items.push({t:p.at,txt:'📌 New announcement: '+(p.title||String(p.text||'').slice(0,40)),go:onOpenPosts}));
     const myGroupIds=DB.groups().filter(g=>(g.students||[]).includes(user.id)).map(g=>g.id);
     const seenAssign=_seen(user.id,'assign');
     DB.assignments().filter(a=>myGroupIds.includes(a.groupId)&&(a.createdAt||0)>seenAssign).forEach(a=>items.push({t:a.createdAt,txt:'📋 New '+(a.type==='mock'?'mock exam':'homework')+': '+a.title,go:()=>onOpenGroup(a.groupId,a.type==='mock'?'mock':'homework')}));
     const seenMsg=_seen(user.id,'smsg');
     DB.messages().filter(m=>(m.at||0)>seenMsg&&m.from==='teacher'&&!m.parentId&&(m.to===user.id||m.broadcast)).forEach(m=>items.push({t:m.at,txt:'💬 Teacher: '+String(m.text||'').slice(0,40),go:()=>onOpenGroup(m.groupId,'chat')}));
+    /* class notices, for the classes this student is actually in */
+    const myGids=DB.groups().filter(g=>(g.students||[]).includes(user.id)).map(g=>g.id);
+    DB.posts().filter(p=>p.groupId&&myGids.includes(p.groupId)&&(p.at||0)>seenPost)
+      .forEach(p=>items.push({t:p.at,txt:'📣 Class notice: '+String(p.text||'').slice(0,40),go:()=>onOpenGroup(p.groupId,'notices')}));
   }
   items.sort((a,b)=>b.t-a.t);
   const count=items.length;
@@ -3115,6 +3203,34 @@ function parentSalutation(p){
   last=last.replace(/(^|[-'])([a-z])/g,(m,a,b)=>a+b.toUpperCase());
   return 'Dear Mr / Mrs '+last+',';
 }
+/* The end-of-month nudge: how the month went, and a push to open the report. */
+function buildParentMonthlyMessage(parent,child,teacherName){
+  const name=(child&&child.name)?child.name.split(' ')[0]:'your child';
+  const mk=monthKeyNow();
+  const gids=DB.groups().filter(g=>(g.students||[]).includes(child?child.id:null)).map(g=>g.id);
+  const assigns=DB.assignments().filter(a=>gids.includes(a.groupId)&&monthKeyOf(a)===mk);
+  const subs=DB.submissions().filter(x=>x.studentId===(child?child.id:null));
+  let got=0,poss=0,done=0,late=0;
+  assigns.forEach(a=>{
+    const sub=subs.find(x=>x.assignmentId===a.id);
+    if(sub){ done++; if(isLate(a.dueDate,sub.submittedAt)) late++;
+      if(sub.mark!=null&&sub.mark!==undefined){ got+=sub.mark; poss+=(a.totalMark||0); } }
+  });
+  const missing=assigns.filter(a=>!subs.find(x=>x.assignmentId===a.id));
+  const L=[];
+  L.push(parentSalutation(parent));
+  L.push('');
+  L.push('The report for '+monthLabel(mk)+' is now complete for '+name+'.');
+  L.push('');
+  L.push('This month: '+assigns.length+' piece'+(assigns.length===1?'':'s')+' of work set, '+done+' handed in'+(late?(', '+late+' late'):''));
+  if(poss) L.push('Marks: '+got+' out of '+poss+'  ('+Math.round(got/poss*100)+'%)');
+  if(missing.length) L.push('Not handed in: '+missing.map(a=>a.title).join(', '));
+  L.push('');
+  L.push('Please open the Maths Hub to see the full month report, the marked work and the model answers.');
+  L.push('');
+  L.push(teacherName||'Ms. Zahra');
+  return L.join('\n');
+}
 function buildParentMessage(parent,child,teacherName){
   const s=weekSummaryFor(child?child.id:null);
   const name=(child&&child.name)?child.name.split(' ')[0]:'your child';
@@ -3139,17 +3255,22 @@ function buildParentMessage(parent,child,teacherName){
 function WeeklyReminders(){
   const [tick,setTick]=useState(0);
   const [edit,setEdit]=useState({});         /* parentId -> phone being typed */
+  const [mode,setMode]=useState(()=>isLastThursdayOfMonth()?'month':'week');
   const st=appSettings();
-  const sent=st.weeklySent||{};              /* parentId -> weekKey */
-  const wk=weekKey();
+  const monthly=mode==='month';
+  const sent=(monthly?st.monthlySent:st.weeklySent)||{};
+  const wk=monthly?monthKeyNow():weekKey();
   const parents=DB.parents(); const studs=DB.students();
   const today=new Date();
   const isThursday=today.getDay()===4;
+  const isLastThurs=isLastThursdayOfMonth(today);
   const link=(st.siteLink||'').trim();
 
   function markSent(pid){
-    const cur=appSettings().weeklySent||{};
-    saveSetting({weeklySent:Object.assign({},cur,{[pid]:wk})});
+    const s0=appSettings();
+    const cur=(monthly?s0.monthlySent:s0.weeklySent)||{};
+    const next=Object.assign({},cur,{[pid]:wk});
+    saveSetting(monthly?{monthlySent:next}:{weeklySent:next});
     setTick(t=>t+1);
   }
   function savePhone(pid){
@@ -3165,21 +3286,29 @@ function WeeklyReminders(){
 
   return (
     <div>
-      <div style={{background:isThursday?'#DCEFE3':'#FFF4E5',border:'2px solid '+(isThursday?'#22c55e':'#E8623D'),borderRadius:12,padding:'12px 16px',marginBottom:14}}>
+      <div style={{display:'flex',gap:8,marginBottom:12,flexWrap:'wrap'}}>
+        <button className="a-btn" onClick={()=>setMode('week')} style={{background:mode==='week'?'var(--green-deep)':'',color:mode==='week'?'#fff':'',borderColor:mode==='week'?'var(--green-deep)':''}}>📅 Weekly update</button>
+        <button className="a-btn" onClick={()=>setMode('month')} style={{background:monthly?'var(--green-deep)':'',color:monthly?'#fff':'',borderColor:monthly?'var(--green-deep)':''}}>🗓 Monthly report{isLastThurs?' ← due today':''}</button>
+      </div>
+      <div style={{background:(monthly?isLastThurs:isThursday)?'#DCEFE3':'#FFF4E5',border:'2px solid '+((monthly?isLastThurs:isThursday)?'#22c55e':'#E8623D'),borderRadius:12,padding:'12px 16px',marginBottom:14}}>
         <div style={{fontWeight:700,fontSize:15,marginBottom:4}}>
-          {isThursday?'📅 It’s Thursday — time for this week’s parent update':'📅 Weekly parent update'}
+          {monthly
+            ? (isLastThurs?('🗓 Last Thursday of '+monthLabel(monthKeyNow())+' — time for the monthly report'):('🗓 Monthly report — '+monthLabel(monthKeyNow())))
+            : (isThursday?'📅 It’s Thursday — time for this week’s parent update':'📅 Weekly parent update')}
         </div>
         <div style={{fontSize:13,opacity:0.8}}>
-          Each message is written for you with that child’s own homework and marks. Press the button, WhatsApp opens with the message ready, and you press send.
+          {monthly
+            ? 'Sent on the last Thursday of each month: how the whole month went, and a reminder to open the full report.'
+            : 'Each message is written for you with that child’s own homework and marks. Press the button, WhatsApp opens with the message ready, and you press send.'}
         </div>
-        <div style={{fontSize:13,fontWeight:700,marginTop:8}}>Sent this week: {done} of {parents.length}</div>
+        <div style={{fontSize:13,fontWeight:700,marginTop:8}}>Sent {monthly?'this month':'this week'}: {done} of {parents.length}</div>
       </div>
 
       {parents.length===0&&<div className="empty-state">No parents have registered yet.</div>}
 
       {parents.map(p=>{
         const child=studs.find(x=>x.id===p.childId);
-        const msg=buildParentMessage(p,child,'Ms. Zahra')+(link?('\n\n'+link):'');
+        const msg=(monthly?buildParentMonthlyMessage(p,child,'Ms. Zahra'):buildParentMessage(p,child,'Ms. Zahra'))+(link?('\n\n'+link):'');
         const isSent=sent[p.id]===wk;
         const hasPhone=!!(p.phone&&validPhone(p.phone));
         return (
@@ -3494,7 +3623,7 @@ function ParentPortal({user,onLogout}){
           <div className="p-nav-label">Navigation</div>
           <div className={"p-nav-item "+(pv==='home'?'active':'')} onClick={()=>setPv('home')}>🏠 Home</div>
           <div className={"p-nav-item "+(pv==='report'?'active':'')} onClick={()=>setPv('report')}>📊 Child Report</div>
-          <div className={"p-nav-item "+(pv==='lessons'?'active':'')} onClick={()=>setPv('lessons')}>📊 Lessons</div>
+          {!userIsEbookOnly(user)&&<div className={"p-nav-item "+(pv==='lessons'?'active':'')} onClick={()=>setPv('lessons')}>📊 Lessons</div>}
           <div className={"p-nav-item "+(pv==='posts'?'active':'')} onClick={()=>setPv('posts')}>📌 Announcements</div>
           <div className={"p-nav-item "+(pv==='chat'?'active':'')} onClick={()=>setPv('chat')}>💬 Chat with teacher</div>
           <div className={"p-nav-item "+(pv==='pw'?'active':'')} onClick={()=>setPv('pw')}>🔑 My password</div>
@@ -4050,9 +4179,11 @@ function FileView({data,name,fileId}){
   const data_=real;
   if(!data_&&fileId) return <div className="empty-state">⏳ Opening file…</div>;
   if(!data_) return <div className="empty-state">⏳ Loading file… if it stays blank, this file was uploaded before the fix and needs to be re-uploaded (correction) or re-submitted by the student.</div>;
-  if(isImg) return <img src={data_} alt={name||'file'} style={{maxWidth:'100%',border:'2px solid var(--ink)',borderRadius:10}}/>;
-  if(isPdf) return <PdfView data={data_}/>;
-  if(isDocxData(data_,name)) return <DocxView data={data_} name={name}/>;
+  /* a download is always offered, even while the picture or PDF is on screen */
+  const dl=<div style={{marginTop:8}}><DownloadBtn data={data_} name={name||'file'} style={{fontSize:11,padding:'4px 10px'}}/></div>;
+  if(isImg) return <div><img src={data_} alt={name||'file'} style={{maxWidth:'100%',border:'2px solid var(--ink)',borderRadius:10}}/>{dl}</div>;
+  if(isPdf) return <div><PdfView data={data_}/>{dl}</div>;
+  if(isDocxData(data_,name)) return <div><DocxView data={data_} name={name}/>{dl}</div>;
   const ext=((name||'').split('.').pop()||'').toUpperCase();
   return (
     <div style={{marginTop:10,padding:'14px 16px',background:'#FFF4E5',border:'2px solid #E8623D',borderRadius:10}}>
