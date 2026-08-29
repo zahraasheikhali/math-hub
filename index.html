@@ -256,6 +256,41 @@
     min-height: 100vh; display: flex; align-items: center; justify-content: center;
     padding: 2rem; flex-direction: column; gap: 1rem;
   }
+  /* Sign-in screen: information panel on the left, sign-in card on the right */
+  .login-split {
+    display: flex; width: 100%; max-width: 980px; align-items: stretch;
+    border: 3px solid var(--ink); border-radius: 16px; overflow: hidden;
+    box-shadow: 8px 8px 0 var(--ink); background: white;
+  }
+  .login-info {
+    flex: 1 1 46%; background: var(--green-deep); color: #fff;
+    padding: 2.4rem 2.2rem; display: flex; flex-direction: column; gap: 1.1rem;
+    background-image: radial-gradient(circle at 88% 8%, rgba(224,172,43,0.20), transparent 42%),
+                      radial-gradient(circle at 6% 96%, rgba(232,98,61,0.22), transparent 46%);
+  }
+  .login-info h2 { font-family: Georgia, serif; font-size: 25px; line-height: 1.2; margin: 0; }
+  .login-exam {
+    display: inline-block; align-self: flex-start; background: var(--gold); color: var(--green-deep);
+    font-weight: 800; font-size: 11px; letter-spacing: .6px; text-transform: uppercase;
+    padding: 5px 11px; border-radius: 999px;
+  }
+  .login-teacher {
+    display: flex; align-items: center; gap: 12px;
+    background: rgba(255,255,255,0.09); border: 1px solid rgba(255,255,255,0.20);
+    border-radius: 12px; padding: 11px 13px;
+  }
+  .login-points { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 9px; }
+  .login-points li { display: flex; gap: 9px; font-size: 13.5px; line-height: 1.45; opacity: .95; }
+  .login-points b { color: var(--gold); }
+  .login-right { flex: 1 1 54%; display: flex; align-items: center; justify-content: center; padding: 2rem 1.6rem; background: var(--paper); }
+  .login-right .login-card { border: none; box-shadow: none; padding: 0; max-width: 400px; background: transparent; }
+  @media (max-width: 860px) {
+    .login-split { flex-direction: column; box-shadow: 5px 5px 0 var(--ink); }
+    .login-info { padding: 1.6rem 1.4rem; gap: .85rem; }
+    .login-info h2 { font-size: 21px; }
+    .login-points { display: none; }             /* keep phones short */
+    .login-right { padding: 1.4rem 1.1rem; }
+  }
   .login-back {
     align-self: flex-start; display: flex; align-items: center; gap: 6px;
     font-size: 13px; color: var(--chalk-blue); cursor: pointer; font-weight: 700;
@@ -1289,10 +1324,29 @@ function LoginPage({onSuccess,onBack}) {
 
   return (
     <div className="login-page">
-      <div style={{width:80,height:80,borderRadius:'50%',background:'var(--green-deep)',border:'4px solid var(--coral)',display:'flex',alignItems:'center',justifyContent:'center',fontSize:40,marginBottom:-20,zIndex:2,boxShadow:'0 4px 12px rgba(0,0,0,0.15)'}}>
-        {tab==='teacher'?'👩‍🏫':tab==='parent'?'👪':'🎓'}
-      </div>
-      <div className="login-card" style={{paddingTop:'2rem'}}>
+      <div className="login-split">
+        <div className="login-info">
+          <span className="login-exam">Pearson Edexcel IGCSE (9–1)</span>
+          <h2>Mathematics A<br/>Higher Tier</h2>
+          <div className="login-teacher">
+            <div style={{width:44,height:44,borderRadius:'50%',background:'var(--coral)',display:'flex',alignItems:'center',justifyContent:'center',fontSize:22,flexShrink:0}}>👩‍🏫</div>
+            <div>
+              <div style={{fontWeight:800,fontSize:15}}>Ms. Zahra Sheikh Ali</div>
+              <div style={{fontSize:12,opacity:.85}}>Teacher of Mathematics</div>
+            </div>
+          </div>
+          <ul className="login-points">
+            <li><span>📊</span><span><b>58 topics</b> of the Higher Tier course, with lesson slides</span></li>
+            <li><span>📖</span><span>An <b>eBook</b> and question bank for practice</span></li>
+            <li><span>📝</span><span><b>Homework and mock exams</b> — submitted, marked and returned with model answers</span></li>
+            <li><span>👪</span><span>A <b>parent portal</b> showing progress and marks</span></li>
+          </ul>
+          <div style={{marginTop:'auto',fontSize:11.5,opacity:.75,lineHeight:1.5}}>
+            Students and parents: register once, then your teacher approves your account.
+          </div>
+        </div>
+        <div className="login-right">
+      <div className="login-card" style={{paddingTop:0}}>
         <div className="login-logo">Zπ &nbsp;Zahra's Maths Hub</div>
         <div className="login-tagline">Sign in to your portal</div>
         <div className="login-tabs">
@@ -1395,6 +1449,8 @@ function LoginPage({onSuccess,onBack}) {
             <div className="login-switch">Already registered? <span onClick={()=>{setMode('login');setErr('');}}>Sign in</span></div>
           </>
         )}
+      </div>
+        </div>
       </div>
     </div>
   );
