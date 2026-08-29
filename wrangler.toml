@@ -1,5 +1,11 @@
 name = "math-hub"
+main = "src/index.js"
 compatibility_date = "2024-11-01"
 
 [assets]
 directory = "./"
+binding = "ASSETS"
+
+[[kv_namespaces]]
+binding = "PUSH_SUBS"
+id = "PASTE_YOUR_KV_NAMESPACE_ID_HERE"

@@ -35,3 +35,26 @@ self.addEventListener('fetch', e => {
       .catch(() => caches.match(req).then(hit => hit || caches.match('./index.html')))
   );
 });
+
+/* ───────── notifications ───────── */
+self.addEventListener('push', e => {
+  let d = { title: "Zahra's Maths Hub", body: 'Open the app to see what is new.', url: './' };
+  try { if (e.data) d = Object.assign(d, e.data.json()); } catch (err) { try { d.body = e.data.text(); } catch (e2) {} }
+  e.waitUntil(self.registration.showNotification(d.title, {
+    body: d.body,
+    icon: './icon-192.png',
+    badge: './icon-192.png',
+    data: { url: d.url || './' },
+    tag: d.tag || 'mathhub',
+    renotify: true
+  }));
+});
+
+self.addEventListener('notificationclick', e => {
+  e.notification.close();
+  const target = (e.notification.data && e.notification.data.url) || './';
+  e.waitUntil(clients.matchAll({ type: 'window', includeUncontrolled: true }).then(list => {
+    for (const c of list) { if ('focus' in c) return c.focus(); }   /* already open — bring it forward */
+    if (clients.openWindow) return clients.openWindow(target);
+  }));
+});

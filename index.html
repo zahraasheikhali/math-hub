@@ -577,6 +577,98 @@ function now() { return Date.now(); }
 function fmtDate(ts) { return new Date(ts).toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'}); }
 function initials(n) { return (n||'?').split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase(); }
 function isLate(due,subAt) { if(!due||!subAt) return false; const end=new Date(due+'T23:59:59').getTime(); return !isNaN(end) ? subAt>end : subAt>new Date(due).getTime(); }
+/* ═══════════ PHONE NOTIFICATIONS ═══════════
+   Free. The sending key lives on the Cloudflare server, never in this file.
+   The teacher's send-token is typed once and kept in HER browser only — it is
+   deliberately NOT synced, so nobody else's device ever sees it. */
+const PUSH_TOKEN_KEY='zh_push_token';
+function teacherPushToken(){ try{ return localStorage.getItem(PUSH_TOKEN_KEY)||''; }catch(e){ return ''; } }
+function setTeacherPushToken(v){ try{ v?localStorage.setItem(PUSH_TOKEN_KEY,v):localStorage.removeItem(PUSH_TOKEN_KEY); }catch(e){} }
+
+function pushSupported(){
+  try{ return 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window; }catch(e){ return false; }
+}
+async function subscribeToPush(user){
+  if(!pushSupported()) return {ok:false,why:'unsupported'};
+  if(isIOS()&&!isStandalone()) return {ok:false,why:'ios-needs-install'};
+  const perm=await Notification.requestPermission();
+  if(perm!=='granted') return {ok:false,why:'denied'};
+  const reg=await navigator.serviceWorker.ready;
+  const r=await fetch('/api/vapid-public').then(x=>x.json()).catch(()=>null);
+  if(!r||!r.key) return {ok:false,why:'server'};
+  const raw=atob(r.key.replace(/-/g,'+').replace(/_/g,'/'));
+  const key=new Uint8Array(raw.length); for(let i=0;i<raw.length;i++) key[i]=raw.charCodeAt(i);
+  const sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:key});
+  const j=sub.toJSON();
+  const res=await fetch('/api/subscribe',{method:'POST',headers:{'content-type':'application/json'},
+    body:JSON.stringify({endpoint:j.endpoint,keys:j.keys,role:user.role,userId:user.id})});
+  return res.ok?{ok:true}:{ok:false,why:'server'};
+}
+/* Send a notification. Silently does nothing if the teacher has not set her token. */
+async function pushNotify(title,body,opts){
+  const token=teacherPushToken(); if(!token) return;
+  try{
+    await fetch('/api/notify',{method:'POST',headers:{'content-type':'application/json'},
+      body:JSON.stringify(Object.assign({token,title,body},opts||{}))});
+  }catch(e){}
+}
+
+/* Students and parents: one button to turn phone notifications on. */
+function NotifyButton({user}){
+  const [state,setState]=useState('idle');
+  const [msg,setMsg]=useState('');
+  if(!pushSupported()) return null;
+  if(typeof Notification!=='undefined'&&Notification.permission==='granted'&&state==='idle') return null;
+  return (
+    <div style={{padding:'0 10px',marginBottom:6}}>
+      <button className="p-foot-btn" style={{width:'100%'}} onClick={async()=>{
+        setState('working'); setMsg('');
+        const r=await subscribeToPush(user);
+        if(r.ok){ setState('done'); setMsg('✓ Notifications are on'); }
+        else{
+          setState('idle');
+          setMsg(r.why==='ios-needs-install'?'On iPhone, first add the app to your Home Screen, then try again.'
+            :r.why==='denied'?'You said no to notifications. Allow them in your browser settings to turn them on.'
+            :r.why==='unsupported'?'This browser cannot show notifications.'
+            :'Could not turn them on. Try again later.');
+        }
+      }}>{state==='working'?'…':state==='done'?'🔔 Notifications on':'🔔 Turn on notifications'}</button>
+      {msg&&<div style={{fontSize:11,marginTop:4,opacity:.85}}>{msg}</div>}
+    </div>
+  );
+}
+
+/* Teacher: paste the send-token once, and test it. */
+function PushSetup(){
+  const [tok,setTok]=useState(teacherPushToken());
+  const [msg,setMsg]=useState('');
+  return (
+    <div style={{background:'white',border:'2px solid var(--ink)',borderRadius:12,padding:'14px 16px',boxShadow:'3px 3px 0 var(--ink)',marginBottom:16}}>
+      <div style={{fontWeight:700,fontFamily:'Georgia,serif',color:'var(--green-deep)',marginBottom:4}}>🔔 Phone notifications</div>
+      <div style={{fontSize:12.5,opacity:.8,marginBottom:8}}>
+        Paste the send-token you set in Cloudflare. It is saved only on this device and never shared.
+      </div>
+      <input type="password" value={tok} onChange={e=>setTok(e.target.value)} placeholder="send-token"
+        style={{width:'100%',padding:'7px 10px',border:'2px solid var(--ink)',borderRadius:7,fontSize:13,fontFamily:'inherit'}}/>
+      <div style={{display:'flex',gap:6,marginTop:8,flexWrap:'wrap'}}>
+        <button className="a-btn" onClick={()=>{ setTeacherPushToken(tok.trim()); setMsg(tok.trim()?'Saved on this device.':'Cleared.'); }}>Save</button>
+        <button className="a-btn" onClick={async()=>{
+          if(!teacherPushToken()){ setMsg('Save the token first.'); return; }
+          setMsg('Sending…');
+          try{
+            const r=await fetch('/api/notify',{method:'POST',headers:{'content-type':'application/json'},
+              body:JSON.stringify({token:teacherPushToken(),title:'Test from the Maths Hub',body:'If you can read this, notifications are working.'})});
+            const j=await r.json();
+            setMsg(r.ok?('Sent to '+j.sent+' device'+(j.sent===1?'':'s')+(j.removed?(', '+j.removed+' old ones removed'):'')+'.')
+                       :('Server said: '+(j.error||r.status)));
+          }catch(e){ setMsg('Could not reach the server. Is the Worker deployed?'); }
+        }}>Send a test</button>
+      </div>
+      {msg&&<div style={{fontSize:12,fontWeight:700,marginTop:8}}>{msg}</div>}
+    </div>
+  );
+}
+
 /* ═══════════ INSTALL AS AN APP ═══════════
    Android shows a real install prompt; iPhone has no prompt, so we explain the
    Share → Add to Home Screen steps instead. Hidden once it is already installed. */
@@ -1661,6 +1753,7 @@ function PortalApp({user,onLogout,topics,progress,toggleDone,addQuestion,deleteQ
         ))}
         {isT&&<div className="p-nav-item" onClick={()=>setModal({type:'createGroup'})} style={{marginTop:6}}>＋ Create group</div>}
       </div>
+      {user.role!=='teacher'&&<NotifyButton user={user}/>}
       <div style={{padding:'0 10px'}}><InstallApp compact/></div>
       <div className="p-sidebar-foot" style={{gap:6}}>
         <button className="p-foot-btn" onClick={()=>setModal({type:'changePw'})} style={{flex:1}}>🔑 Password</button>
@@ -1991,8 +2084,15 @@ function FullReviewPage({assignId,group,tick,refresh}) {
 
   function saveMark(subId,val){
     const subs=DB.submissions(); const sub=subs.find(s=>s.id===subId);
-    if(sub) sub.mark=isNaN(parseFloat(val))?null:parseFloat(val);
-    DB.save.submissions(subs); refresh();
+    const _v=isNaN(parseFloat(val))?null:parseFloat(val);
+    if(sub) sub.mark=_v;
+    DB.save.submissions(subs);
+    if(sub&&_v!==null){
+      const _a=DB.assignments().find(x=>x.id===sub.assignmentId);
+      pushNotify('Your work has been marked',
+        (_a?_a.title:'Your work')+' — open the Maths Hub to see your mark and the model answers.',
+        {userIds:[sub.studentId]});
+    } refresh();
   }
   async function uploadCorrection(subId,e){
     const file=e.target.files[0]; if(!file)return;
@@ -2671,6 +2771,8 @@ function AssignForm({groupId,atype,assignId,onDone}) {
     } else {
       const assigns=DB.assignments();
       assigns.push({id:uid(),groupId,type:resolvedType,title:f.title.trim(),description:f.desc,totalMark:Number(f.marks),dueDate:f.due||null,fileName:fileData?f.fileName:null,fileData:fileData||null,correctedFile:null,createdAt:now()});
+      pushNotify(resolvedType==='mock'?'New mock exam':'New homework',
+        f.title.trim()+(f.due?(' — due '+fmtDue(f.due)):'')+'. Open the Maths Hub to see it.');
       DB.save.assignments(assigns);
     }
     onDone();
@@ -2728,7 +2830,19 @@ function SubsView({assignId,onRefresh}) {
   const studs=DB.students();
   const [viewingFile,setViewingFile]=useState(null);
   const corrRefs=useRef({});
-  function saveMark(subId,val){ const subs=DB.submissions(); const sub=subs.find(s=>s.id===subId); if(sub)sub.mark=isNaN(parseFloat(val))?null:parseFloat(val); DB.save.submissions(subs); onRefresh(); }
+  function saveMark(subId,val){
+    const subs=DB.submissions(); const sub=subs.find(s=>s.id===subId);
+    const v=isNaN(parseFloat(val))?null:parseFloat(val);
+    if(sub) sub.mark=v;
+    DB.save.submissions(subs);
+    if(sub&&v!==null){
+      const a=DB.assignments().find(x=>x.id===sub.assignmentId);
+      pushNotify('Your work has been marked',
+        (a?a.title:'Your work')+' — open the Maths Hub to see your mark and the model answers.',
+        {userIds:[sub.studentId]});
+    }
+    onRefresh();
+  }
   function viewFile(sub){ if(hasFile(sub,'fileData')){ setViewingFile(sub); } }
   async function uploadCorrectionForStudent(subId,e){
     const file=e.target.files[0]; if(!file)return;
@@ -2918,7 +3032,13 @@ function PostsView({user}){
   const [replyText,setReplyText]=useState({});
   useEffect(()=>{ try{ localStorage.setItem('zh_seen_posts_'+user.id,String(Date.now())); window.dispatchEvent(new Event('zh-data-changed')); }catch(e){} },[posts.length]);
 
-  function publish(){ if(!text.trim())return; const p={id:uid(),title:title.trim()||null,text:text.trim(),by:user.name||'Teacher',at:now(),replies:[]}; DB.save.posts([...DB.posts(),p]); setText(''); setTitle(''); }
+  function publish(){
+    if(!text.trim())return;
+    const p={id:uid(),title:title.trim()||null,text:text.trim(),by:user.name||'Teacher',at:now(),replies:[]};
+    DB.save.posts([...DB.posts(),p]);
+    pushNotify('New announcement', (title.trim()||text.trim()).slice(0,120));
+    setText(''); setTitle('');
+  }
   function del(id){ if(!confirm('Delete this announcement?'))return; DB.save.posts(DB.posts().filter(p=>p.id!==id)); }
   function startEdit(p){ setEditId(p.id); setEditText(p.text); setEditTitle(p.title||''); }
   function saveEdit(){ const all=DB.posts(); const p=all.find(x=>x.id===editId); if(p){ p.text=editText.trim()||p.text; p.title=editTitle.trim()||null; p.edited=true; DB.save.posts(all);} setEditId(null); }
@@ -3656,6 +3776,7 @@ function RegistrationsView(){
     <div className="p-main">
       <div className="p-topbar"><div className="p-topbar-title">👥 Registrations</div></div>
       <div className="p-page">
+        <PushSetup/>
         {reqs.length>0&&(
           <div style={{background:'#FFF4E5',border:'2px solid #E8623D',borderRadius:12,padding:'12px 16px',marginBottom:16}}>
             <div style={{fontWeight:700,marginBottom:4}}>🔑 Password help needed ({reqs.length})</div>
@@ -3813,6 +3934,9 @@ function ParentPortal({user,onLogout}){
           <div className={"p-nav-item "+(pv==='posts'?'active':'')} onClick={()=>setPv('posts')}>📌 Announcements</div>
           <div className={"p-nav-item "+(pv==='chat'?'active':'')} onClick={()=>setPv('chat')}>💬 Chat with teacher</div>
           <div className={"p-nav-item "+(pv==='pw'?'active':'')} onClick={()=>setPv('pw')}>🔑 My password</div>
+        </div>
+        <div style={{padding:'8px 6px'}}>
+          <NotifyButton user={user}/>
         </div>
       </div>
       {pv==='home'?homeView()
