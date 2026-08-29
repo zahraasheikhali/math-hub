@@ -725,7 +725,7 @@ const FIREBASE_CONFIG = {
 
 const KEYS = ['groups','students','messages','submissions','assignments','posts','meetings','parents','recordings','sessions','settings'];
 /* fields that may hold a large uploaded file (base64) — stored separately so docs stay small */
-const FILE_FIELDS = { assignments:['fileData','correctionData'], submissions:['fileData','correctedFileData'], meetings:['attachmentData'], messages:['fileData'] };
+const FILE_FIELDS = { assignments:['fileData','correctionData'], submissions:['fileData','correctedFileData'], meetings:['attachmentData'], messages:['fileData'], posts:['fileData'] };
 const CHUNK = 700000; /* base64 chars per file-chunk doc, safely under Firestore's 1MB limit */
 const CLOUD_ON = !!FIREBASE_CONFIG.projectId && !FIREBASE_CONFIG.projectId.includes('PASTE');
 /* Once the teacher changes her password it lives in settings; the constant above
@@ -1513,8 +1513,16 @@ function PortalApp({user,onLogout,topics,progress,toggleDone,addQuestion,deleteQ
                     <div className="p-dots-item" onClick={()=>{openGroup(g.id,'members');setDotsOpen(null);}}>👥 Manage students</div>
                     <div className="p-dots-item" onClick={()=>{renameGroup(g);setDotsOpen(null);}}>✏️ Rename group</div>
                     <div className="p-dots-item" onClick={()=>{setModal({type:'addStudent',id:g.id});setDotsOpen(null);}}>➕ Add students</div>
-                    <div className="p-dots-item" onClick={()=>{setModal({type:'addAssign',id:g.id,extra:'homework'});setDotsOpen(null);}}>📋 Add homework</div>
-                    <div className="p-dots-item" onClick={()=>{setModal({type:'addAssign',id:g.id,extra:'mock'});setDotsOpen(null);}}>📝 Add mock exam</div>
+                    <div className="p-dots-item" onClick={()=>{
+                      const all=DB.groups(); const r=all.find(x=>x.id===g.id); if(!r){setDotsOpen(null);return;}
+                      const turnOn=!r.ebookOnly;
+                      if(confirm(turnOn
+                        ? 'Make “'+r.name+'” a Year 9 class?\n\nIts students will no longer see the Lessons slides — only the eBook — and the class gets a Class notices tab.'
+                        : 'Turn off Year 9 for “'+r.name+'”?\n\nIts students will get the Lessons slides back.')){
+                        r.ebookOnly=turnOn; DB.save.groups(all); refresh();
+                      }
+                      setDotsOpen(null);
+                    }}>📗 {g.ebookOnly?'Year 9 — turn off':'Make Year 9 (eBook only)'}</div>
                     <div className="p-dots-item danger" onClick={()=>deleteGroup(g.id)}>🗑 Delete group</div>
                   </div>
                 )}
@@ -1661,19 +1669,7 @@ function PortalApp({user,onLogout,topics,progress,toggleDone,addQuestion,deleteQ
         <div className="p-topbar" style={{flexWrap:'wrap',gap:8}}>
           <div style={{display:'flex',alignItems:'center',gap:6}}>
             <div className="p-topbar-title">{group.name}</div>
-            {isT&&<button className="a-btn" onClick={()=>renameGroup(group)} style={{fontSize:11,padding:'4px 9px'}}>✏️ Rename</button>}
-            {isT&&<button className="a-btn" onClick={()=>{
-              const all=DB.groups(); const r=all.find(x=>x.id===group.id);
-              if(!r) return;
-              const turnOn=!r.ebookOnly;
-              if(!confirm(turnOn
-                ? 'Make “'+r.name+'” a Year 9 class?\n\nIts students will no longer see the Lessons slides — only the eBook — and the class gets a Class notices tab.'
-                : 'Turn off Year 9 for “'+r.name+'”?\n\nIts students will get the Lessons slides back.')) return;
-              r.ebookOnly=turnOn; DB.save.groups(all); refresh();
-            }} style={{fontSize:11,padding:'4px 9px',background:group.ebookOnly?'var(--green-deep)':'',color:group.ebookOnly?'#fff':'',borderColor:group.ebookOnly?'var(--green-deep)':''}}>
-              {group.ebookOnly?'📗 Year 9 (eBook only)':'📗 Make Year 9'}
-            </button>}
-            {isT&&<button className="a-btn danger" onClick={()=>deleteGroup(group.id)} style={{fontSize:11,padding:'4px 9px'}}>🗑 Delete</button>}
+            {isT&&group.ebookOnly&&<span className="pill pill-green" style={{fontSize:10}}>📗 Year 9 · eBook only</span>}
           </div>
           <div className="p-tabs">{tabs.map(t=><button key={t} className={"p-tab "+(subView===t?'active':'')} onClick={()=>{setSubView(t);setReviewAssignId(null);setDetailStudentId(null);}}>{lbls[t]}</button>)}</div>
         </div>
@@ -2152,39 +2148,99 @@ function TrackView({groupId,user,onModal,onDetail,tick}) {
 function GroupNotices({groupId,user,refresh}){
   const isT=user.role==='teacher';
   const [txt,setTxt]=useState('');
+  const [editId,setEditId]=useState(null);
+  const [editTxt,setEditTxt]=useState('');
+  const att=useAttach();                      /* same picker the chats use */
   const list=DB.posts().filter(p=>p.groupId===groupId).sort((a,b)=>(b.at||0)-(a.at||0));
   function post(){
-    const t=txt.trim(); if(!t) return;
+    const t=txt.trim();
+    if(!t&&!att.att){ alert('Write a notice, or attach a file.'); return; }
     const all=DB.posts();
-    all.push({id:uid(),groupId,text:t,at:now(),by:'teacher'});
-    DB.save.posts(all); setTxt(''); if(refresh) refresh();
+    const p={id:uid(),groupId,text:t,at:now(),by:'teacher'};
+    if(att.att){ p.fileName=att.att.name; p.fileData=att.att.data; }
+    all.push(p);
+    DB.save.posts(all); setTxt(''); att.setAtt(null); if(refresh) refresh();
   }
-  function del(id){
-    if(!confirm('Delete this notice?')) return;
-    DB.save.posts(DB.posts().filter(p=>p.id!==id)); if(refresh) refresh();
+  function saveEdit(){
+    const all=DB.posts(); const n=all.find(x=>x.id===editId);
+    if(n){ n.text=editTxt.trim(); n.edited=now(); DB.save.posts(all); }
+    setEditId(null); setEditTxt(''); if(refresh) refresh();
+  }
+  function del(n){
+    if(!confirm(n.fileName?('Delete this notice and its file “'+n.fileName+'”?'):'Delete this notice?')) return;
+    if(n.fileDataId) DB.deleteFile(n.fileDataId);
+    DB.save.posts(DB.posts().filter(p=>p.id!==n.id)); if(refresh) refresh();
   }
   return (
     <div>
       <div style={{fontFamily:'Georgia,serif',fontWeight:700,fontSize:17,color:'var(--green-deep)',marginBottom:6}}>📣 Class notices</div>
-      <div style={{fontSize:13,opacity:0.75,marginBottom:14}}>Notices for this class only. Everyone in the class sees them when they open the group.</div>
+      <div style={{fontSize:13,opacity:0.75,marginBottom:14}}>Notices for this class only. You can attach a PDF or a picture and the students can download it.</div>
       {isT&&(
         <div style={{background:'white',border:'2px solid var(--ink)',borderRadius:12,padding:'12px 14px',boxShadow:'3px 3px 0 var(--ink)',marginBottom:16}}>
           <textarea value={txt} onChange={e=>setTxt(e.target.value)} rows={3}
             placeholder="e.g. This week revise chapter 4 of the eBook, pages 60–72."
             style={{width:'100%',padding:'9px 11px',border:'2px solid var(--ink)',borderRadius:8,fontSize:14,fontFamily:'inherit',resize:'vertical'}}/>
-          <button className="small-btn" style={{marginTop:8}} onClick={post}>📣 Post notice</button>
+          {att.att&&(
+            <div style={{display:'flex',alignItems:'center',gap:8,marginTop:8,padding:'6px 10px',background:'#DCEFE3',border:'1px solid #22c55e',borderRadius:8,fontSize:12}}>
+              <span style={{flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>📎 {att.att.name}</span>
+              <button className="a-btn" style={{fontSize:11,padding:'2px 8px'}} onClick={()=>att.setAtt(null)}>✕ Remove</button>
+            </div>
+          )}
+          <div style={{display:'flex',gap:8,marginTop:8,alignItems:'center',flexWrap:'wrap'}}>
+            <input ref={att.inputRef} type="file" accept={CHAT_ACCEPT} style={{display:'none'}} onChange={att.pick}/>
+            <button className="a-btn" onClick={()=>att.inputRef.current&&att.inputRef.current.click()}>{att.busy?'⏳ Reading…':'📎 Attach PDF or picture'}</button>
+            <button className="small-btn" onClick={post}>📣 Post notice</button>
+          </div>
         </div>
       )}
       {list.length===0&&<div className="empty-state">No notices yet{isT?' — write the first one above.':'.'}</div>}
       {list.map(n=>(
         <div key={n.id} className="a-card" style={{marginBottom:10}}>
-          <div style={{display:'flex',gap:10,alignItems:'flex-start'}}>
-            <div style={{flex:1,whiteSpace:'pre-wrap',fontSize:14}}>{n.text}</div>
-            {isT&&<button className="a-btn danger" style={{fontSize:11,padding:'3px 8px'}} onClick={()=>del(n.id)}>🗑</button>}
-          </div>
-          <div style={{fontSize:11,opacity:0.6,marginTop:6}}>{fmtDate(n.at)}</div>
+          {editId===n.id?(
+            <div>
+              <textarea value={editTxt} onChange={e=>setEditTxt(e.target.value)} rows={3}
+                style={{width:'100%',padding:'9px 11px',border:'2px solid var(--ink)',borderRadius:8,fontSize:14,fontFamily:'inherit',resize:'vertical'}}/>
+              <div style={{display:'flex',gap:6,marginTop:8}}>
+                <button className="small-btn" onClick={saveEdit}>Save</button>
+                <button className="a-btn" onClick={()=>{setEditId(null);setEditTxt('');}}>Cancel</button>
+              </div>
+            </div>
+          ):(
+            <>
+              <div style={{display:'flex',gap:10,alignItems:'flex-start'}}>
+                <div style={{flex:1,whiteSpace:'pre-wrap',fontSize:14}}>
+                  {n.text}
+                  {n.edited&&<span style={{fontSize:10,opacity:0.55,marginLeft:6}}>(edited)</span>}
+                </div>
+                {isT&&(
+                  <div style={{display:'flex',gap:6,flexShrink:0}}>
+                    <button className="a-btn" style={{fontSize:11,padding:'3px 8px'}} onClick={()=>{setEditId(n.id);setEditTxt(n.text||'');}}>✏️ Edit</button>
+                    <button className="a-btn danger" style={{fontSize:11,padding:'3px 8px'}} onClick={()=>del(n)}>🗑</button>
+                  </div>
+                )}
+              </div>
+              {n.fileName&&hasFile(n,'fileData')&&<NoticeFile n={n}/>}
+              <div style={{fontSize:11,opacity:0.6,marginTop:6}}>{fmtDate(n.at)}</div>
+            </>
+          )}
         </div>
       ))}
+    </div>
+  );
+}
+/* A notice attachment: view it here, or download it. */
+function NoticeFile({n}){
+  const [open,setOpen]=useState(false);
+  const isImg=/\.(png|jpe?g|gif|webp|bmp|heic|heif)$/i.test(n.fileName||'');
+  return (
+    <div style={{marginTop:8}}>
+      <div style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}}>
+        <button className="a-btn" style={{fontSize:11,padding:'3px 8px'}} onClick={()=>setOpen(o=>!o)}>
+          {open?'✕ Hide':(isImg?'🖼 View picture':'📎 '+n.fileName)}
+        </button>
+        <DownloadBtn data={n.fileData} fileId={n.fileDataId} name={n.fileName} style={{fontSize:11,padding:'3px 8px'}}/>
+      </div>
+      {open&&<div style={{marginTop:6}}><FileView data={n.fileData} name={n.fileName} fileId={n.fileDataId}/></div>}
     </div>
   );
 }
