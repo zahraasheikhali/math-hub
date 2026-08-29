@@ -7,6 +7,15 @@
 <meta http-equiv="Pragma" content="no-cache" />
 <meta http-equiv="Expires" content="0" />
 <title>Zahra's IGCSE Math Hub</title>
+<!-- Installable app (PWA): adds an icon to the home screen and opens full-screen -->
+<link rel="manifest" href="manifest.webmanifest" />
+<meta name="theme-color" content="#16261F" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="Maths Hub" />
+<link rel="apple-touch-icon" href="apple-touch-icon.png" />
+<link rel="icon" type="image/png" sizes="192x192" href="icon-192.png" />
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
@@ -18,6 +27,22 @@
 </head>
 <body style="margin:0;">
 <div id="app-root"></div>
+<script>
+/* Register the service worker so the site can be installed as an app.
+   It is network-first, so a new version always wins over the cached copy. */
+if('serviceWorker' in navigator){
+  window.addEventListener('load',function(){
+    navigator.serviceWorker.register('sw.js').catch(function(){});
+  });
+}
+/* Android/Chrome fires this instead of installing straight away — keep it so
+   the in-app "Install" button can use it later. */
+window.__installPrompt=null;
+window.addEventListener('beforeinstallprompt',function(e){
+  e.preventDefault(); window.__installPrompt=e;
+  try{ window.dispatchEvent(new Event('zh-installable')); }catch(err){}
+});
+</script>
 <style>
   #app-root, #app-root * { box-sizing: border-box; }
   #app-root {
@@ -552,6 +577,53 @@ function now() { return Date.now(); }
 function fmtDate(ts) { return new Date(ts).toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'}); }
 function initials(n) { return (n||'?').split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase(); }
 function isLate(due,subAt) { if(!due||!subAt) return false; const end=new Date(due+'T23:59:59').getTime(); return !isNaN(end) ? subAt>end : subAt>new Date(due).getTime(); }
+/* ═══════════ INSTALL AS AN APP ═══════════
+   Android shows a real install prompt; iPhone has no prompt, so we explain the
+   Share → Add to Home Screen steps instead. Hidden once it is already installed. */
+function isStandalone(){
+  try{ return window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone===true; }catch(e){ return false; }
+}
+function isIOS(){ try{ return /iphone|ipad|ipod/i.test(navigator.userAgent); }catch(e){ return false; } }
+function InstallApp({compact}){
+  const [prompt,setPrompt]=useState(()=>window.__installPrompt||null);
+  const [showIos,setShowIos]=useState(false);
+  const [done,setDone]=useState(false);
+  useEffect(()=>{
+    const fn=()=>setPrompt(window.__installPrompt||null);
+    window.addEventListener('zh-installable',fn);
+    return ()=>window.removeEventListener('zh-installable',fn);
+  },[]);
+  if(done||isStandalone()) return null;
+  const ios=isIOS();
+  if(!prompt&&!ios) return null;              /* desktop browsers: nothing to show */
+  return (
+    <div style={{marginTop:compact?8:12,padding:'10px 13px',background:'#DCEFE3',border:'2px solid #22c55e',borderRadius:10}}>
+      <div style={{fontSize:13,fontWeight:700,marginBottom:4}}>📱 Add the Maths Hub to your phone</div>
+      {ios?(
+        showIos?(
+          <div style={{fontSize:12.5,lineHeight:1.6}}>
+            1. Tap the <strong>Share</strong> button at the bottom of Safari (the square with an arrow)<br/>
+            2. Scroll down and tap <strong>Add to Home Screen</strong><br/>
+            3. Tap <strong>Add</strong><br/>
+            <span style={{opacity:.75}}>The icon appears with your other apps.</span>
+          </div>
+        ):(
+          <button className="a-btn" style={{fontSize:12}} onClick={()=>setShowIos(true)}>Show me how</button>
+        )
+      ):(
+        <>
+          <div style={{fontSize:12.5,opacity:.85,marginBottom:8}}>It opens like a normal app, with no address bar.</div>
+          <button className="a-btn" style={{fontSize:12,background:'var(--green-deep)',color:'#fff',borderColor:'var(--green-deep)'}}
+            onClick={async()=>{
+              try{ prompt.prompt(); const r=await prompt.userChoice; if(r&&r.outcome==='accepted') setDone(true); window.__installPrompt=null; }
+              catch(e){}
+            }}>⬇ Install app</button>
+        </>
+      )}
+    </div>
+  );
+}
+
 /* ═══════════ PASSWORDS ═══════════
    There is no mail service, so "forgot password" files a request the teacher
    sees; she sets a new one and tells the person (WhatsApp is right there). */
@@ -1344,6 +1416,7 @@ function LoginPage({onSuccess,onBack}) {
           <div style={{marginTop:'auto',fontSize:11.5,opacity:.75,lineHeight:1.5}}>
             Students and parents: register once, then your teacher approves your account.
           </div>
+          <div style={{background:'#fff',borderRadius:10}}><InstallApp compact/></div>
         </div>
         <div className="login-right">
       <div className="login-card" style={{paddingTop:0}}>
@@ -1588,6 +1661,7 @@ function PortalApp({user,onLogout,topics,progress,toggleDone,addQuestion,deleteQ
         ))}
         {isT&&<div className="p-nav-item" onClick={()=>setModal({type:'createGroup'})} style={{marginTop:6}}>＋ Create group</div>}
       </div>
+      <div style={{padding:'0 10px'}}><InstallApp compact/></div>
       <div className="p-sidebar-foot" style={{gap:6}}>
         <button className="p-foot-btn" onClick={()=>setModal({type:'changePw'})} style={{flex:1}}>🔑 Password</button>
         <button className="p-foot-btn" onClick={onLogout} style={{flex:1}}>Sign out</button>
