@@ -1762,11 +1762,13 @@ function PortalApp({user,onLogout,topics,progress,toggleDone,addQuestion,deleteQ
         ))}
         {isT&&<div className="p-nav-item" onClick={()=>setModal({type:'createGroup'})} style={{marginTop:6}}>＋ Create group</div>}
       </div>
-      {user.role!=='teacher'&&<NotifyButton user={user}/>}
       <div style={{padding:'0 10px'}}><InstallApp compact/></div>
-      <div className="p-sidebar-foot" style={{gap:6}}>
-        <button className="p-foot-btn" onClick={()=>setModal({type:'changePw'})} style={{flex:1}}>🔑 Password</button>
-        <button className="p-foot-btn" onClick={onLogout} style={{flex:1}}>Sign out</button>
+      <div className="p-sidebar-foot" style={{flexDirection:'column',gap:8,alignItems:'stretch'}}>
+        <NotifyButton user={user}/>
+        <div style={{display:'flex',gap:6}}>
+          <button className="p-foot-btn" onClick={()=>setModal({type:'changePw'})} style={{flex:1}}>🔑 Password</button>
+          <button className="p-foot-btn" onClick={onLogout} style={{flex:1}}>Sign out</button>
+        </div>
       </div>
     </div>
   );
@@ -2399,6 +2401,8 @@ function GroupNotices({groupId,user,refresh}){
     if(att.att){ p.fileName=att.att.name; p.fileData=att.att.data; }
     all.push(p);
     DB.save.posts(all); setTxt(''); att.setAtt(null); if(refresh) refresh();
+    const g=DB.groups().find(x=>x.id===groupId);
+    pushNotify('📣 Class notice', t.slice(0,120)||'A file was posted for your class.', {userIds:(g&&g.students)||[]});
   }
   function saveEdit(){
     const all=DB.posts(); const n=all.find(x=>x.id===editId);
@@ -2600,11 +2604,14 @@ function ChatView({groupId,user,chatTarget,setChatTarget,tick,refresh}) {
       if(target===ALL_TARGET){
         // Broadcast to all students
         msgs.push(Object.assign({id:uid(),groupId,from:'teacher',to:ALL_TARGET,text:body,at:now(),broadcast:true},file));
+        pushNotify('💬 Message from your teacher', body.slice(0,120)||'📎 Attachment sent', {userIds:studs.map(s=>s.id)});
       } else {
         msgs.push(Object.assign({id:uid(),groupId,from:'teacher',to:target,text:body,at:now()},file));
+        pushNotify('💬 Message from your teacher', body.slice(0,120)||'📎 Attachment sent', {userIds:[target]});
       }
     } else {
       msgs.push(Object.assign({id:uid(),groupId,from:user.id,to:'teacher',text:body,at:now()},file));
+      pushNotify('💬 '+(user.name||'A student')+' sent a message', body.slice(0,120)||'📎 Attachment sent', {userIds:['teacher']});
     }
     DB.save.messages(msgs);
     setMsg(''); att.setAtt(null); refresh();
@@ -3458,6 +3465,13 @@ function ParentChat({parentId,me}){
     if(isAll) base.parentBroadcast=true;
     all.push(Object.assign(base,file));
     DB.save.messages(all); setMsg(''); att.setAtt(null);
+    if(me==='teacher'){
+      if(isAll) pushNotify('💬 Message to all parents', body.slice(0,120)||'📎 Attachment sent', {role:'parent'});
+      else pushNotify('💬 Message from the teacher', body.slice(0,120)||'📎 Attachment sent', {userIds:[parentId]});
+    } else {
+      const pName=(DB.parents().find(p=>p.id===parentId)||{}).name||'A parent';
+      pushNotify('💬 '+pName+' sent a message', body.slice(0,120)||'📎 Attachment sent', {userIds:['teacher']});
+    }
   }
   function saveEdit(m,text){
     const all=DB.messages(); const t=all.find(x=>x.id===m.id);
