@@ -610,16 +610,23 @@ async function subscribeToPush(user){
   if(isIOS()&&!isStandalone()) return {ok:false,why:'ios-needs-install'};
   const perm=await Notification.requestPermission();
   if(perm!=='granted') return {ok:false,why:'denied'};
-  const reg=await navigator.serviceWorker.ready;
-  const r=await fetch('/api/vapid-public').then(x=>x.json()).catch(()=>null);
-  if(!r||!r.key) return {ok:false,why:'server'};
-  const raw=atob(r.key.replace(/-/g,'+').replace(/_/g,'/'));
-  const key=new Uint8Array(raw.length); for(let i=0;i<raw.length;i++) key[i]=raw.charCodeAt(i);
-  const sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:key});
-  const j=sub.toJSON();
-  const res=await fetch('/api/subscribe',{method:'POST',headers:{'content-type':'application/json'},
-    body:JSON.stringify({endpoint:j.endpoint,keys:j.keys,role:user.role,userId:user.id})});
-  return res.ok?{ok:true}:{ok:false,why:'server'};
+  try{
+    const reg=await navigator.serviceWorker.ready;
+    const vres=await fetch('/api/vapid-public');
+    if(!vres.ok) return {ok:false,why:'server',detail:'vapid-public returned HTTP '+vres.status};
+    const r=await vres.json().catch(()=>null);
+    if(!r||!r.key) return {ok:false,why:'server',detail:'the server has no notification key set (VAPID_PUBLIC missing on Cloudflare)'};
+    const raw=atob(r.key.replace(/-/g,'+').replace(/_/g,'/'));
+    const key=new Uint8Array(raw.length); for(let i=0;i<raw.length;i++) key[i]=raw.charCodeAt(i);
+    const sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:key});
+    const j=sub.toJSON();
+    const res=await fetch('/api/subscribe',{method:'POST',headers:{'content-type':'application/json'},
+      body:JSON.stringify({endpoint:j.endpoint,keys:j.keys,role:user.role,userId:user.id})});
+    if(!res.ok) return {ok:false,why:'server',detail:'saving the subscription returned HTTP '+res.status};
+    return {ok:true};
+  }catch(e){
+    return {ok:false,why:'server',detail:(e&&e.message)||String(e)};
+  }
 }
 /* Send a notification. Silently does nothing if the teacher has not set her token. */
 async function pushNotify(title,body,opts){
@@ -656,7 +663,7 @@ function NotifyButton({user}){
       setMsg(r.why==='ios-needs-install'?'On iPhone, first add the app to your Home Screen, then try again.'
         :r.why==='denied'?'You said no to notifications. Allow them in your browser settings to turn them on.'
         :r.why==='unsupported'?'This browser cannot show notifications.'
-        :'Could not turn them on. Try again later.');
+        :'Could not turn them on'+(r.detail?(': '+r.detail):'')+'.');
     }
   }
   return (
