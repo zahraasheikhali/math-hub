@@ -410,6 +410,11 @@ window.addEventListener('beforeinstallprompt',function(e){
   .p-dots-item.danger { color: var(--coral-dark); }
 
   .p-sidebar-foot { padding: 12px 10px; border-top: 2px solid var(--ink); display: flex; gap: 8px; }
+  /* On phones, the sidebar's nav/groups/footer collapse behind a ⋮ button next to
+     the bell — otherwise the whole menu fills the screen before any content shows.
+     On desktop these rules do nothing; the media query below is what activates them. */
+  .p-menu-toggle { display: none; border: 2px solid var(--ink); background: white; border-radius: 8px; width: 34px; height: 34px; font-size: 18px; font-weight: 700; cursor: pointer; flex-shrink: 0; }
+  .p-sidebar-body { }
   .p-foot-btn {
     border: 2px solid var(--ink); background: white; border-radius: 8px;
     padding: 7px 12px; font-size: 12px; font-weight: 700; cursor: pointer;
@@ -553,6 +558,9 @@ window.addEventListener('beforeinstallprompt',function(e){
     .syllabus-grid { grid-template-columns: 1fr; }
     .portal-layout { flex-direction: column; }
     .p-sidebar { width: 100%; height: auto; }
+    .p-menu-toggle { display: flex; align-items: center; justify-content: center; }
+    .p-sidebar-body { display: none; max-height: 60vh; overflow-y: auto; }
+    .p-sidebar-body.open { display: block; }
     /* Chat made clear and easy on phones */
     .chat-frame { flex-direction: column; height: auto; gap: 10px; }
     .chat-students { width: 100%; max-height: 132px; }
@@ -624,24 +632,38 @@ async function pushNotify(title,body,opts){
 
 /* Students and parents: one button to turn phone notifications on. */
 function NotifyButton({user}){
-  const [state,setState]=useState('idle');
+  const [status,setStatus]=useState('checking');   /* checking | off | on | working | unsupported */
   const [msg,setMsg]=useState('');
-  if(!pushSupported()) return null;
-  if(typeof Notification!=='undefined'&&Notification.permission==='granted'&&state==='idle') return null;
+  useEffect(()=>{
+    let dead=false;
+    (async()=>{
+      if(!pushSupported()){ if(!dead) setStatus('unsupported'); return; }
+      try{
+        const reg=await navigator.serviceWorker.ready;
+        const sub=await reg.pushManager.getSubscription();
+        if(!dead) setStatus(sub?'on':'off');
+      }catch(e){ if(!dead) setStatus('off'); }
+    })();
+    return ()=>{ dead=true; };
+  },[]);
+  if(status==='unsupported'||status==='checking') return null;
+  async function turnOn(){
+    setStatus('working'); setMsg('');
+    const r=await subscribeToPush(user);
+    if(r.ok){ setStatus('on'); setMsg('✓ Notifications are on'); }
+    else{
+      setStatus('off');
+      setMsg(r.why==='ios-needs-install'?'On iPhone, first add the app to your Home Screen, then try again.'
+        :r.why==='denied'?'You said no to notifications. Allow them in your browser settings to turn them on.'
+        :r.why==='unsupported'?'This browser cannot show notifications.'
+        :'Could not turn them on. Try again later.');
+    }
+  }
   return (
     <div style={{padding:'0 10px',marginBottom:6}}>
-      <button className="p-foot-btn" style={{width:'100%'}} onClick={async()=>{
-        setState('working'); setMsg('');
-        const r=await subscribeToPush(user);
-        if(r.ok){ setState('done'); setMsg('✓ Notifications are on'); }
-        else{
-          setState('idle');
-          setMsg(r.why==='ios-needs-install'?'On iPhone, first add the app to your Home Screen, then try again.'
-            :r.why==='denied'?'You said no to notifications. Allow them in your browser settings to turn them on.'
-            :r.why==='unsupported'?'This browser cannot show notifications.'
-            :'Could not turn them on. Try again later.');
-        }
-      }}>{state==='working'?'…':state==='done'?'🔔 Notifications on':'🔔 Turn on notifications'}</button>
+      <button className="p-foot-btn" style={{width:'100%'}} disabled={status==='working'} onClick={turnOn}>
+        {status==='working'?'…':status==='on'?'🔔 Notifications on — tap to refresh':'🔔 Turn on notifications'}
+      </button>
       {msg&&<div style={{fontSize:11,marginTop:4,opacity:.85}}>{msg}</div>}
     </div>
   );
@@ -1666,6 +1688,7 @@ function PortalApp({user,onLogout,topics,progress,toggleDone,addQuestion,deleteQ
   const [detailStudentId,setDetailStudentId]=useState(null);   /* full-page student report */
   const [liveMeeting,setLiveMeeting]=useState(null);
   const [assignStudentId,setAssignStudentId]=useState(null);
+  const [navOpen,setNavOpen]=useState(false);   /* mobile: menu starts collapsed to leave room for content */
 
   const refresh=()=>setTick(t=>t+1);
   const isT=user.role==='teacher';
@@ -1718,8 +1741,12 @@ function PortalApp({user,onLogout,topics,progress,toggleDone,addQuestion,deleteQ
           <div className="p-sidebar-logo">Zπ Maths Hub Portal</div>
           <div className="p-sidebar-user">{user.name} · {isT?'Teacher':'Student'}</div>
         </div>
-        <Notifications user={user} onOpenPosts={()=>{setView('posts');setDotsOpen(null);}} onOpenGroup={(id,tab,rid)=>id?openGroup(id,tab,rid):openHome()} onOpenMeetings={()=>{setView('meetings');setDotsOpen(null);}} onAddStudent={(sid)=>setAssignStudentId(sid)} onOpenParents={()=>{setView('parents');setDotsOpen(null);}} onOpenRegs={()=>{setView('registrations');setDotsOpen(null);}}/>
+        <div style={{display:'flex',gap:6,alignItems:'flex-start'}}>
+          <Notifications user={user} onOpenPosts={()=>{setView('posts');setDotsOpen(null);}} onOpenGroup={(id,tab,rid)=>id?openGroup(id,tab,rid):openHome()} onOpenMeetings={()=>{setView('meetings');setDotsOpen(null);}} onAddStudent={(sid)=>setAssignStudentId(sid)} onOpenParents={()=>{setView('parents');setDotsOpen(null);}} onOpenRegs={()=>{setView('registrations');setDotsOpen(null);}}/>
+          <button className="p-menu-toggle" onClick={()=>setNavOpen(o=>!o)} title="Menu">⋮</button>
+        </div>
       </div>
+      <div className={"p-sidebar-body"+(navOpen?' open':'')} onClick={()=>setNavOpen(false)}>
       <div className="p-sidebar-nav">
         <div className="p-nav-label">Navigation</div>
         <div className={"p-nav-item "+(view==='home'?'active':'')} onClick={openHome}>🏠 Home</div>
@@ -1769,6 +1796,7 @@ function PortalApp({user,onLogout,topics,progress,toggleDone,addQuestion,deleteQ
           <button className="p-foot-btn" onClick={()=>setModal({type:'changePw'})} style={{flex:1}}>🔑 Password</button>
           <button className="p-foot-btn" onClick={onLogout} style={{flex:1}}>Sign out</button>
         </div>
+      </div>
       </div>
     </div>
   );
