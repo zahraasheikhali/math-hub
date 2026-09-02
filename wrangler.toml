@@ -9,3 +9,12 @@ binding = "ASSETS"
 [[kv_namespaces]]
 binding = "PUSH_SUBS"
 id = "2bcca653989f47ca955175cb82b3025a"
+
+# These two are safe to keep here — VAPID_PUBLIC is meant to be public (every
+# browser receives it), and VAPID_SUBJECT is just a contact email. Keeping them
+# here means Cloudflare can never wipe them on a deploy, unlike the dashboard.
+# TEACHER_TOKEN and VAPID_PRIVATE stay as Secrets in the Cloudflare dashboard —
+# those must NEVER go in this file or in GitHub.
+[vars]
+VAPID_PUBLIC = "BC8wzIEM9Rc1FygriMLoO83Jp6apLWD2cK1LYAIfkBH5otJymcci0CRp0wScK5xTBlH72yrFWYL5ec9Y_wTrwhk"
+VAPID_SUBJECT = "mailto:zahraa.sheikhali@outlook.com"
