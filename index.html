@@ -3444,9 +3444,9 @@ function MeetingsView({user,onLive}){
 /* ═══════════ RECORDINGS (view-only) ═══════════ */
 function embedVideo(url){
   const yt=url.match(/(?:youtu\.be\/|youtube\.com\/(?:watch\?v=|embed\/))([\w-]{11})/);
-  if(yt) return <iframe src={'https://www.youtube.com/embed/'+yt[1]} style={{width:'100%',aspectRatio:'16/9',border:0,borderRadius:8}} allowFullScreen title="rec"/>;
+  if(yt) return <iframe src={'https://www.youtube.com/embed/'+yt[1]} style={{width:'100%',aspectRatio:'16/9',border:0,borderRadius:8,position:'relative',zIndex:1}} allowFullScreen title="rec"/>;
   const gd=url.match(/drive\.google\.com\/file\/d\/([\w-]+)/);
-  if(gd) return <iframe src={'https://drive.google.com/file/d/'+gd[1]+'/preview'} style={{width:'100%',aspectRatio:'16/9',border:0,borderRadius:8}} allowFullScreen title="rec"/>;
+  if(gd) return <iframe src={'https://drive.google.com/file/d/'+gd[1]+'/preview'} style={{width:'100%',aspectRatio:'16/9',border:0,borderRadius:8,position:'relative',zIndex:1}} allowFullScreen title="rec"/>;
   const dbx=url.match(/dropbox\.com\/[^\s]+/);
   if(dbx){ const direct=url.replace('www.dropbox.com','dl.dropboxusercontent.com').replace('?dl=0','').replace('&dl=0',''); return <video src={direct} controls controlsList="nodownload noplaybackrate" onContextMenu={e=>e.preventDefault()} style={{width:'100%',borderRadius:8,background:'#000'}}/>; }
   return <video src={url} controls controlsList="nodownload noplaybackrate" onContextMenu={e=>e.preventDefault()} style={{width:'100%',borderRadius:8,background:'#000'}}/>;
@@ -4131,7 +4131,7 @@ function LessonsView({user,onManageAccess}){
           {isT && <button className="a-btn" onClick={runDiag}>🔎 Check slide file</button>}
         </div>
         {diag && <div style={{background:'#F4F7F5',border:'2px solid var(--ink)',borderRadius:10,padding:'10px 14px',marginBottom:10,fontSize:13,lineHeight:1.5,wordBreak:'break-word'}}>{diag}</div>}
-        <iframe key={viewerKey} src={msViewer} style={{width:'100%',height:'78vh',border:'2px solid var(--ink)',borderRadius:10,background:'#fff'}} title={openL.t} allowFullScreen/>
+        <iframe key={viewerKey} src={msViewer} style={{width:'100%',height:'78vh',border:'2px solid var(--ink)',borderRadius:10,background:'#fff',position:'relative',zIndex:1}} title={openL.t} allowFullScreen/>
         <div style={{fontSize:12,opacity:0.6,marginTop:8}}>This is the live PowerPoint — use the arrows to move through the slides, or the ⛶ button for full screen. If the viewer shows an error, use <b>Download &amp; present in PowerPoint</b> — that always works and keeps all animations.</div>
       </div>
     </div>
