@@ -645,29 +645,6 @@ async function pushNotify(title,body,opts){
       body:JSON.stringify(Object.assign({token,title,body},opts||{}))});
   }catch(e){}
 }
-/* Parents of a given list of student ids. */
-function parentIdsOfStudents(studentIds){
-  const set=new Set(studentIds||[]);
-  return DB.parents().filter(p=>set.has(p.childId)).map(p=>p.id);
-}
-/* Notify a whole group: students get an "open and check" message (they can see
-   homework/mock/correction content); parents just get told it exists (they can
-   only see marks, not the homework itself) — never invited to "open the web"
-   for these, since there is nothing there for them to view. */
-function notifyGroup(groupId,studentTitle,studentBody,parentTitle,parentBody){
-  const g=DB.groups().find(x=>x.id===groupId);
-  const studentIds=(g&&g.students)||[];
-  if(studentIds.length) pushNotify(studentTitle,studentBody,{userIds:studentIds});
-  const parentIds=parentIdsOfStudents(studentIds);
-  if(parentIds.length) pushNotify(parentTitle,parentBody,{userIds:parentIds});
-}
-/* Notify one student and their parent(s). Marks ARE visible to parents, so
-   their message invites them to open the app too, unlike homework/correction. */
-function notifyStudentAndParent(studentId,studentTitle,studentBody,parentTitle,parentBody){
-  pushNotify(studentTitle,studentBody,{userIds:[studentId]});
-  const parentIds=parentIdsOfStudents([studentId]);
-  if(parentIds.length) pushNotify(parentTitle,parentBody,{userIds:parentIds});
-}
 
 /* Students and parents: one button to turn phone notifications on. */
 function NotifyButton({user}){
@@ -1534,7 +1511,6 @@ function LoginPage({onSuccess,onBack}) {
     if(studs.find(s=>s.email.toLowerCase()===f.email.trim().toLowerCase())){ setErr('Email already registered.'); return; }
     const s={id:uid(),name:f.name.trim(),email:f.email.trim(),pass:String(f.pass||'').trim(),phone:normPhone(f.phone),phoneRaw:f.phone.trim(),createdAt:now(),approved:false};
     studs.push(s); DB.save.students(studs);
-    pushNotify('👤 New student registered', s.name+' has registered — open the app to approve.', {userIds:['teacher']});
     onSuccess({id:s.id,name:s.name,email:s.email,role:'student'});
   }
   function doStudentLogin() {
@@ -1551,7 +1527,6 @@ function LoginPage({onSuccess,onBack}) {
     if(parents.find(p=>p.email.toLowerCase()===f.email.trim().toLowerCase())){ setErr('This email is already registered as a parent.'); return; }
     const p={id:uid(),name:f.name.trim(),email:f.email.trim(),pass:String(f.pass||'').trim(),phone:normPhone(f.phone),phoneRaw:f.phone.trim(),childId:child.id,createdAt:now(),approved:false};
     parents.push(p); DB.save.parents(parents);
-    pushNotify('👪 New parent registered', p.name+' (parent of '+child.name+') has registered — open the app to approve.', {userIds:['teacher']});
     onSuccess({id:p.id,name:p.name,email:p.email,role:'parent',childId:child.id});
   }
   function doParentLogin() {
@@ -2164,7 +2139,6 @@ function FullReviewPage({assignId,group,tick,refresh}) {
   const studs=DB.students().filter(s=>(group.students||[]).includes(s.id));
   const [viewingFile,setViewingFile]=useState(null);
   const corrRefs=useRef({});
-  const multiCorrRefs=useRef({});
 
   function saveMark(subId,val){
     const subs=DB.submissions(); const sub=subs.find(s=>s.id===subId);
@@ -2173,28 +2147,17 @@ function FullReviewPage({assignId,group,tick,refresh}) {
     DB.save.submissions(subs);
     if(sub&&_v!==null){
       const _a=DB.assignments().find(x=>x.id===sub.assignmentId);
-      const t=_a?_a.title:'Your work';
-      notifyStudentAndParent(sub.studentId,
-        'Your work has been marked', t+' — open the Maths Hub to see your mark and the model answers.',
-        'Your child\u2019s work has been marked', t+' has a new mark — open the Maths Hub to check it.');
+      pushNotify('Your work has been marked',
+        (_a?_a.title:'Your work')+' — open the Maths Hub to see your mark and the model answers.',
+        {userIds:[sub.studentId]});
     } refresh();
   }
   async function uploadCorrection(subId,e){
-    const list=e.target.files; e.target.value='';
-    let r=null; try{ r=await readMultiUpload(list); }catch(err){ alert('Could not read those files. Please try again.'); return; }
-    if(!r) return;
-    if(r.error){ alert('You can select several photos together, or one PDF/Word file — not a mix of both.'); return; }
+    const file=e.target.files[0]; if(!file)return;
+    const data=await readUpload(file); if(!data)return;
     const subs=DB.submissions(); const sub=subs.find(s=>s.id===subId);
-    if(sub){sub.correctedFile=r.name;sub.correctedFileData=r.data;}
-    DB.save.submissions(subs);
-    if(sub){
-      const _a=DB.assignments().find(x=>x.id===sub.assignmentId);
-      const t=_a?_a.title:'your work';
-      notifyStudentAndParent(sub.studentId,
-        '📄 Your correction is ready', 'Open the Maths Hub to see the correction for '+t+'.',
-        '📄 Correction uploaded', 'A correction has been uploaded for your child\u2019s '+t+'.');
-    }
-    refresh();
+    if(sub){sub.correctedFile=file.name;sub.correctedFileData=data;}
+    DB.save.submissions(subs); refresh();
   }
 
   if(!a) return <div className="empty-state">Assignment not found.</div>;
@@ -2248,7 +2211,6 @@ function FullReviewPage({assignId,group,tick,refresh}) {
         const late=sub&&isLate(a.dueDate,sub.submittedAt);
         const refKey=sub?sub.id:'no_'+s.id;
         if(sub&&!corrRefs.current[refKey]) corrRefs.current[refKey]=React.createRef();
-        if(sub&&!multiCorrRefs.current[refKey]) multiCorrRefs.current[refKey]=React.createRef();
 
         return (
           <div key={s.id} style={{background:'white',border:'2px solid var(--ink)',borderRadius:12,padding:'16px 18px',marginBottom:12,boxShadow:'3px 3px 0 var(--ink)'}}>
@@ -2294,8 +2256,6 @@ function FullReviewPage({assignId,group,tick,refresh}) {
                 <button className="a-btn" onClick={()=>corrRefs.current[refKey]?.current?.click()} style={{background:sub.correctedFile?'#1F6B43':'var(--coral)',color:'white',borderColor:sub.correctedFile?'#1F6B43':'var(--coral)',fontSize:12}}>
                   {sub.correctedFile?'✓ '+sub.correctedFile:'📤 Correction'}
                 </button>
-                <input ref={multiCorrRefs.current[refKey]} type="file" accept="image/*" multiple style={{display:'none'}} onChange={e=>uploadCorrection(sub.id,e)}/>
-                <button className="a-btn" title="Choose several photos at once" onClick={()=>multiCorrRefs.current[refKey]?.current?.click()} style={{fontSize:12}}>🖼</button>
               </div>
             )}
           </div>
@@ -2873,10 +2833,8 @@ function AssignForm({groupId,atype,assignId,onDone}) {
     } else {
       const assigns=DB.assignments();
       assigns.push({id:uid(),groupId,type:resolvedType,title:f.title.trim(),description:f.desc,totalMark:Number(f.marks),dueDate:f.due||null,fileName:fileData?f.fileName:null,fileData:fileData||null,correctedFile:null,createdAt:now()});
-      const label=resolvedType==='mock'?'mock exam':'homework';
-      notifyGroup(groupId,
-        'New '+label, f.title.trim()+(f.due?(' — due '+fmtDue(f.due)):'')+'. Open the Maths Hub to see it.',
-        'New '+label+' uploaded', 'New '+label+' has been uploaded for your child — '+f.title.trim()+'.');
+      pushNotify(resolvedType==='mock'?'New mock exam':'New homework',
+        f.title.trim()+(f.due?(' — due '+fmtDue(f.due)):'')+'. Open the Maths Hub to see it.');
       DB.save.assignments(assigns);
     }
     onDone();
@@ -2904,43 +2862,26 @@ function SubmitForm({assignId,userId,onDone}) {
   const [fileName,setFileName]=useState('');
   const [fileData,setFileData]=useState(null);
   const [err,setErr]=useState('');
-  const [busy,setBusy]=useState(false);
   const fileRef=useRef(null);
-  const multiRef=useRef(null);
-  async function handleFile(e){
-    const list=e.target.files; e.target.value='';
-    setErr(''); setBusy(true);
-    let r=null;
-    try{ r=await readMultiUpload(list); }catch(err){ setBusy(false); setErr('Could not read those files. Please try again.'); return; }
-    setBusy(false);
-    if(!r) return;
-    if(r.error){ setErr('You can select several photos together, or one PDF/Word file — not a mix of both.'); return; }
-    setFileName(r.name); setFileData(r.data);
-  }
+  async function handleFile(e){ const file=e.target.files[0]; if(!file)return; setFileName(file.name); const d=await readUpload(file); if(d) setFileData(d); }
   function submit(){
     if(!fileData){setErr('Please upload a file first.');return;}
     const existing=DB.submissions().find(s=>s.assignmentId===assignId&&s.studentId===userId);
     if(existing){setErr('You have already submitted this assignment.');return;}
     const subs=DB.submissions();
     subs.push({id:uid(),assignmentId:assignId,studentId:userId,fileName:fileName||'(no file)',fileData,submittedAt:now(),mark:null,correctedFile:null});
-    DB.save.submissions(subs);
-    const a=DB.assignments().find(x=>x.id===assignId);
-    const stu=DB.students().find(x=>x.id===userId);
-    pushNotify('📥 New submission', (stu?stu.name:'A student')+' submitted "'+(a?a.title:'work')+'".', {userIds:['teacher']});
-    onDone();
+    DB.save.submissions(subs); onDone();
   }
   return (
     <>
       <div className="mfield">
         <label>Upload your work</label>
-        <div className="mupload" onClick={()=>fileRef.current&&fileRef.current.click()}>{busy?'⏳ Combining photos…':'📤 '+(fileName||'Click to upload — take a photo, or choose a PDF/Word file')}</div>
+        <div className="mupload" onClick={()=>fileRef.current&&fileRef.current.click()}>📤 {fileName||'Click to upload your work (PDF, DOC, JPG, PNG)'}</div>
         <input ref={fileRef} type="file" accept=".pdf,.doc,.docx,.jpg,.jpeg,.png" style={{display:'none'}} onChange={handleFile}/>
-        <button type="button" className="a-btn" style={{marginTop:8}} onClick={()=>multiRef.current&&multiRef.current.click()}>🖼 Or choose several photos at once</button>
-        <input ref={multiRef} type="file" accept="image/*" multiple style={{display:'none'}} onChange={handleFile}/>
       </div>
       {fileName&&<div style={{fontSize:13,marginBottom:10,color:'var(--green-deep)',fontWeight:600}}>✓ File selected: {fileName}</div>}
       {err&&<div className="merr">{err}</div>}
-      <button className="mbtn" onClick={submit} disabled={busy}>Submit</button>
+      <button className="mbtn" onClick={submit}>Submit</button>
     </>
   );
 }
@@ -2951,7 +2892,6 @@ function SubsView({assignId,onRefresh}) {
   const studs=DB.students();
   const [viewingFile,setViewingFile]=useState(null);
   const corrRefs=useRef({});
-  const multiCorrRefs=useRef({});
   function saveMark(subId,val){
     const subs=DB.submissions(); const sub=subs.find(s=>s.id===subId);
     const v=isNaN(parseFloat(val))?null:parseFloat(val);
@@ -2959,30 +2899,19 @@ function SubsView({assignId,onRefresh}) {
     DB.save.submissions(subs);
     if(sub&&v!==null){
       const a=DB.assignments().find(x=>x.id===sub.assignmentId);
-      const t=a?a.title:'Your work';
-      notifyStudentAndParent(sub.studentId,
-        'Your work has been marked', t+' — open the Maths Hub to see your mark and the model answers.',
-        'Your child\u2019s work has been marked', t+' has a new mark — open the Maths Hub to check it.');
+      pushNotify('Your work has been marked',
+        (a?a.title:'Your work')+' — open the Maths Hub to see your mark and the model answers.',
+        {userIds:[sub.studentId]});
     }
     onRefresh();
   }
   function viewFile(sub){ if(hasFile(sub,'fileData')){ setViewingFile(sub); } }
   async function uploadCorrectionForStudent(subId,e){
-    const list=e.target.files; e.target.value='';
-    let r=null; try{ r=await readMultiUpload(list); }catch(err){ alert('Could not read those files. Please try again.'); return; }
-    if(!r) return;
-    if(r.error){ alert('You can select several photos together, or one PDF/Word file — not a mix of both.'); return; }
+    const file=e.target.files[0]; if(!file)return;
+    const data=await readUpload(file); if(!data)return;
     const subs=DB.submissions(); const sub=subs.find(s=>s.id===subId);
-    if(sub){sub.correctedFile=r.name;sub.correctedFileData=r.data;}
-    DB.save.submissions(subs);
-    if(sub){
-      const a=DB.assignments().find(x=>x.id===sub.assignmentId);
-      const t=a?a.title:'your work';
-      notifyStudentAndParent(sub.studentId,
-        '📄 Your correction is ready', 'Open the Maths Hub to see the correction for '+t+'.',
-        '📄 Correction uploaded', 'A correction has been uploaded for your child\u2019s '+t+'.');
-    }
-    onRefresh();
+    if(sub){sub.correctedFile=file.name;sub.correctedFileData=data;}
+    DB.save.submissions(subs); onRefresh();
   }
   if(allSubs.length===0) return <div className="empty-state">No submissions yet.</div>;
   if(viewingFile) return (
@@ -3000,7 +2929,6 @@ function SubsView({assignId,onRefresh}) {
         const stu=studs.find(s=>s.id===sub.studentId)||{name:'Unknown'};
         const late=isLate(a?.dueDate,sub.submittedAt);
         if(!corrRefs.current[sub.id]) corrRefs.current[sub.id]=React.createRef();
-        if(!multiCorrRefs.current[sub.id]) multiCorrRefs.current[sub.id]=React.createRef();
         return <div key={sub.id} className="sub-card">
           <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:8}}>
             <div style={{width:30,height:30,borderRadius:'50%',background:'var(--chalk-blue)',color:'white',display:'flex',alignItems:'center',justifyContent:'center',fontSize:12,fontWeight:700}}>{initials(stu.name)}</div>
@@ -3022,8 +2950,6 @@ function SubsView({assignId,onRefresh}) {
             <button className="a-btn" onClick={()=>corrRefs.current[sub.id].current&&corrRefs.current[sub.id].current.click()} style={{background:sub.correctedFile?'#1F6B43':'var(--coral)',color:'white',borderColor:sub.correctedFile?'#1F6B43':'var(--coral)'}}>
               {sub.correctedFile?'📄 Replace correction':'📤 Upload correction'}
             </button>
-            <input ref={multiCorrRefs.current[sub.id]} type="file" accept="image/*" multiple style={{display:'none'}} onChange={e=>uploadCorrectionForStudent(sub.id,e)}/>
-            <button className="a-btn" title="Choose several photos at once" onClick={()=>multiCorrRefs.current[sub.id].current&&multiCorrRefs.current[sub.id].current.click()}>🖼</button>
             {sub.correctedFile&&<span className="pill pill-green">✓ {sub.correctedFile}</span>}
           </div>
         </div>;
@@ -3045,11 +2971,7 @@ function CorrectionForm({assignId,onDone}) {
   const [fileData,setFileData]=useState(null);
   const fileRef=useRef(null);
   async function handleFile(e){ const file=e.target.files[0]; if(!file)return; setFileName(file.name); const d=await readUpload(file); if(d) setFileData(d); }
-  function submit(){ if(!fileData){ alert('Please choose a file first.'); return; } const assigns=DB.assignments(); const a=assigns.find(x=>x.id===assignId); if(a){ a.correctedFile=fileName||'correction'; a.correctionData=fileData; } DB.save.assignments(assigns);
-    if(a) notifyGroup(a.groupId,
-      '📄 Model answers uploaded', a.title+' — open the Maths Hub to see the correction.',
-      '📄 Correction uploaded', 'A correction has been uploaded for your child\u2019s '+a.title+'.');
-    onDone(); }
+  function submit(){ if(!fileData){ alert('Please choose a file first.'); return; } const assigns=DB.assignments(); const a=assigns.find(x=>x.id===assignId); if(a){ a.correctedFile=fileName||'correction'; a.correctionData=fileData; } DB.save.assignments(assigns); onDone(); }
   return (
     <>
       <p style={{fontSize:13,opacity:0.7,marginBottom:14}}>Students will see a "Correction available" badge once uploaded.</p>
@@ -3318,7 +3240,7 @@ function Notifications({user,onOpenPosts,onOpenGroup,onOpenMeetings,onAddStudent
         {count>0&&<span style={{position:'absolute',top:-7,right:-7,background:'var(--coral)',color:'white',borderRadius:'50%',minWidth:18,height:18,fontSize:10,fontWeight:700,display:'flex',alignItems:'center',justifyContent:'center',padding:'0 4px',border:'2px solid var(--ink)'}}>{count>9?'9+':count}</span>}
       </button>
       {open&&(
-        <div style={{position:'absolute',left:0,top:'115%',width:260,maxWidth:'80vw',maxHeight:340,overflowY:'auto',background:'white',border:'2px solid var(--ink)',borderRadius:10,boxShadow:'4px 4px 0 var(--ink)',zIndex:1500,padding:8}}>
+        <div style={{position:'absolute',right:0,top:'115%',width:260,maxWidth:'80vw',maxHeight:340,overflowY:'auto',background:'white',border:'2px solid var(--ink)',borderRadius:10,boxShadow:'4px 4px 0 var(--ink)',zIndex:1500,padding:8}}>
           <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'4px 6px 8px'}}>
             <strong style={{fontSize:13}}>Notifications</strong>
             {count>0&&<button className="linklike" onClick={clearAll} style={{fontSize:11}}>Mark all read</button>}
@@ -4345,47 +4267,6 @@ function loadScript(src){
 }
 const MAMMOTH_URL='https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.12.1/mammoth.browser.min.js';
 const XLSX_URL='https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
-const JSPDF_URL='https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js';
-
-/* Combine several photos into one multi-page PDF, so "submit more than one
-   image" keeps working with every part of the app that already expects a
-   single file (viewer, download button, Firestore file storage) with no
-   changes needed anywhere else. */
-async function imagesToPdf(images){
-  await loadScript(JSPDF_URL);
-  const JsPdfCtor=(window.jspdf&&window.jspdf.jsPDF)||window.jsPDF;
-  if(!JsPdfCtor) throw new Error('PDF library did not load');
-  const doc=new JsPdfCtor({unit:'mm',format:'a4'});
-  const pageW=210,pageH=297,margin=10;
-  for(let i=0;i<images.length;i++){
-    const dataUrl=images[i];
-    const dims=await new Promise(res=>{ const im=new Image(); im.onload=()=>res({w:im.width||800,h:im.height||600}); im.onerror=()=>res({w:800,h:600}); im.src=dataUrl; });
-    const maxW=pageW-margin*2, maxH=pageH-margin*2;
-    const s=Math.min(maxW/dims.w,maxH/dims.h);
-    const w=dims.w*s, h=dims.h*s;
-    const x=(pageW-w)/2, y=(pageH-h)/2;
-    if(i>0) doc.addPage();
-    const fmt=/^data:image\/png/i.test(dataUrl)?'PNG':'JPEG';
-    doc.addImage(dataUrl,fmt,x,y,w,h);
-  }
-  return doc.output('datauristring');
-}
-/* One file → same as before. Several files → allowed only if they're all
-   photos, which get merged into a single PDF automatically. */
-async function readMultiUpload(fileList){
-  const files=Array.from(fileList||[]); if(!files.length) return null;
-  if(files.length===1){
-    const d=await readUpload(files[0]);
-    return d?{name:files[0].name,data:d}:null;
-  }
-  const allImages=files.every(f=>/^image\//i.test(f.type||''));
-  if(!allImages) return {error:'mixed'};
-  const datas=[];
-  for(const f of files){ const d=await readUpload(f); if(d) datas.push(d); }
-  if(!datas.length) return null;
-  const pdf=await imagesToPdf(datas);
-  return {name:files.length+' photos combined.pdf',data:pdf};
-}
 
 /* ═══════════ EXCEL EXPORT ═══════════ */
 function safeSheetName(n){ return String(n||'Sheet').replace(/[\\\/\?\*\[\]:]/g,' ').slice(0,31)||'Sheet'; }
