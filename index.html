@@ -2164,6 +2164,7 @@ function FullReviewPage({assignId,group,tick,refresh}) {
   const studs=DB.students().filter(s=>(group.students||[]).includes(s.id));
   const [viewingFile,setViewingFile]=useState(null);
   const corrRefs=useRef({});
+  const multiCorrRefs=useRef({});
 
   function saveMark(subId,val){
     const subs=DB.submissions(); const sub=subs.find(s=>s.id===subId);
@@ -2247,6 +2248,7 @@ function FullReviewPage({assignId,group,tick,refresh}) {
         const late=sub&&isLate(a.dueDate,sub.submittedAt);
         const refKey=sub?sub.id:'no_'+s.id;
         if(sub&&!corrRefs.current[refKey]) corrRefs.current[refKey]=React.createRef();
+        if(sub&&!multiCorrRefs.current[refKey]) multiCorrRefs.current[refKey]=React.createRef();
 
         return (
           <div key={s.id} style={{background:'white',border:'2px solid var(--ink)',borderRadius:12,padding:'16px 18px',marginBottom:12,boxShadow:'3px 3px 0 var(--ink)'}}>
@@ -2288,10 +2290,12 @@ function FullReviewPage({assignId,group,tick,refresh}) {
                 <div style={{width:1,height:24,background:'#d0cec4',margin:'0 2px'}}/>
 
                 {/* correction upload */}
-                <input ref={corrRefs.current[refKey]} type="file" accept=".pdf,.doc,.docx,.jpg,.jpeg,.png" multiple style={{display:'none'}} onChange={e=>uploadCorrection(sub.id,e)}/>
+                <input ref={corrRefs.current[refKey]} type="file" accept=".pdf,.doc,.docx,.jpg,.jpeg,.png" style={{display:'none'}} onChange={e=>uploadCorrection(sub.id,e)}/>
                 <button className="a-btn" onClick={()=>corrRefs.current[refKey]?.current?.click()} style={{background:sub.correctedFile?'#1F6B43':'var(--coral)',color:'white',borderColor:sub.correctedFile?'#1F6B43':'var(--coral)',fontSize:12}}>
                   {sub.correctedFile?'✓ '+sub.correctedFile:'📤 Correction'}
                 </button>
+                <input ref={multiCorrRefs.current[refKey]} type="file" accept="image/*" multiple style={{display:'none'}} onChange={e=>uploadCorrection(sub.id,e)}/>
+                <button className="a-btn" title="Choose several photos at once" onClick={()=>multiCorrRefs.current[refKey]?.current?.click()} style={{fontSize:12}}>🖼</button>
               </div>
             )}
           </div>
@@ -2902,6 +2906,7 @@ function SubmitForm({assignId,userId,onDone}) {
   const [err,setErr]=useState('');
   const [busy,setBusy]=useState(false);
   const fileRef=useRef(null);
+  const multiRef=useRef(null);
   async function handleFile(e){
     const list=e.target.files; e.target.value='';
     setErr(''); setBusy(true);
@@ -2928,8 +2933,10 @@ function SubmitForm({assignId,userId,onDone}) {
     <>
       <div className="mfield">
         <label>Upload your work</label>
-        <div className="mupload" onClick={()=>fileRef.current&&fileRef.current.click()}>{busy?'⏳ Combining photos…':'📤 '+(fileName||'Click to upload your work — a PDF, Word file, or several photos at once')}</div>
-        <input ref={fileRef} type="file" accept=".pdf,.doc,.docx,.jpg,.jpeg,.png" multiple style={{display:'none'}} onChange={handleFile}/>
+        <div className="mupload" onClick={()=>fileRef.current&&fileRef.current.click()}>{busy?'⏳ Combining photos…':'📤 '+(fileName||'Click to upload — take a photo, or choose a PDF/Word file')}</div>
+        <input ref={fileRef} type="file" accept=".pdf,.doc,.docx,.jpg,.jpeg,.png" style={{display:'none'}} onChange={handleFile}/>
+        <button type="button" className="a-btn" style={{marginTop:8}} onClick={()=>multiRef.current&&multiRef.current.click()}>🖼 Or choose several photos at once</button>
+        <input ref={multiRef} type="file" accept="image/*" multiple style={{display:'none'}} onChange={handleFile}/>
       </div>
       {fileName&&<div style={{fontSize:13,marginBottom:10,color:'var(--green-deep)',fontWeight:600}}>✓ File selected: {fileName}</div>}
       {err&&<div className="merr">{err}</div>}
@@ -2944,6 +2951,7 @@ function SubsView({assignId,onRefresh}) {
   const studs=DB.students();
   const [viewingFile,setViewingFile]=useState(null);
   const corrRefs=useRef({});
+  const multiCorrRefs=useRef({});
   function saveMark(subId,val){
     const subs=DB.submissions(); const sub=subs.find(s=>s.id===subId);
     const v=isNaN(parseFloat(val))?null:parseFloat(val);
@@ -2992,6 +3000,7 @@ function SubsView({assignId,onRefresh}) {
         const stu=studs.find(s=>s.id===sub.studentId)||{name:'Unknown'};
         const late=isLate(a?.dueDate,sub.submittedAt);
         if(!corrRefs.current[sub.id]) corrRefs.current[sub.id]=React.createRef();
+        if(!multiCorrRefs.current[sub.id]) multiCorrRefs.current[sub.id]=React.createRef();
         return <div key={sub.id} className="sub-card">
           <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:8}}>
             <div style={{width:30,height:30,borderRadius:'50%',background:'var(--chalk-blue)',color:'white',display:'flex',alignItems:'center',justifyContent:'center',fontSize:12,fontWeight:700}}>{initials(stu.name)}</div>
@@ -3009,10 +3018,12 @@ function SubsView({assignId,onRefresh}) {
             <span style={{fontSize:13}}>/ {a?.totalMark||'?'}</span>
           </div>
           <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
-            <input ref={corrRefs.current[sub.id]} type="file" accept=".pdf,.doc,.docx,.jpg,.jpeg,.png" multiple style={{display:'none'}} onChange={e=>uploadCorrectionForStudent(sub.id,e)}/>
+            <input ref={corrRefs.current[sub.id]} type="file" accept=".pdf,.doc,.docx,.jpg,.jpeg,.png" style={{display:'none'}} onChange={e=>uploadCorrectionForStudent(sub.id,e)}/>
             <button className="a-btn" onClick={()=>corrRefs.current[sub.id].current&&corrRefs.current[sub.id].current.click()} style={{background:sub.correctedFile?'#1F6B43':'var(--coral)',color:'white',borderColor:sub.correctedFile?'#1F6B43':'var(--coral)'}}>
               {sub.correctedFile?'📄 Replace correction':'📤 Upload correction'}
             </button>
+            <input ref={multiCorrRefs.current[sub.id]} type="file" accept="image/*" multiple style={{display:'none'}} onChange={e=>uploadCorrectionForStudent(sub.id,e)}/>
+            <button className="a-btn" title="Choose several photos at once" onClick={()=>multiCorrRefs.current[sub.id].current&&multiCorrRefs.current[sub.id].current.click()}>🖼</button>
             {sub.correctedFile&&<span className="pill pill-green">✓ {sub.correctedFile}</span>}
           </div>
         </div>;
