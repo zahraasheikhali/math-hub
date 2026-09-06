@@ -2180,8 +2180,9 @@ function FullReviewPage({assignId,group,tick,refresh}) {
     } refresh();
   }
   async function uploadCorrection(subId,e){
-    const list=e.target.files; e.target.value='';
-    let r=null; try{ r=await readMultiUpload(list); }catch(err){ alert('Could not read those files. Please try again.'); return; }
+    const list=e.target.files;
+    let r=null; try{ r=await readMultiUpload(list); }catch(err){ e.target.value=''; alert('Could not read those files. Please try again.'); return; }
+    e.target.value='';
     if(!r) return;
     if(r.error){ alert('You can select several photos together, or one PDF/Word file — not a mix of both.'); return; }
     const subs=DB.submissions(); const sub=subs.find(s=>s.id===subId);
@@ -2908,11 +2909,11 @@ function SubmitForm({assignId,userId,onDone}) {
   const fileRef=useRef(null);
   const multiRef=useRef(null);
   async function handleFile(e){
-    const list=e.target.files; e.target.value='';
+    const list=e.target.files;
     setErr(''); setBusy(true);
     let r=null;
-    try{ r=await readMultiUpload(list); }catch(err){ setBusy(false); setErr('Could not read those files. Please try again.'); return; }
-    setBusy(false);
+    try{ r=await readMultiUpload(list); }catch(err){ setBusy(false); e.target.value=''; setErr('Could not read those files. Please try again.'); return; }
+    setBusy(false); e.target.value='';
     if(!r) return;
     if(r.error){ setErr('You can select several photos together, or one PDF/Word file — not a mix of both.'); return; }
     setFileName(r.name); setFileData(r.data);
@@ -2968,8 +2969,9 @@ function SubsView({assignId,onRefresh}) {
   }
   function viewFile(sub){ if(hasFile(sub,'fileData')){ setViewingFile(sub); } }
   async function uploadCorrectionForStudent(subId,e){
-    const list=e.target.files; e.target.value='';
-    let r=null; try{ r=await readMultiUpload(list); }catch(err){ alert('Could not read those files. Please try again.'); return; }
+    const list=e.target.files;
+    let r=null; try{ r=await readMultiUpload(list); }catch(err){ e.target.value=''; alert('Could not read those files. Please try again.'); return; }
+    e.target.value='';
     if(!r) return;
     if(r.error){ alert('You can select several photos together, or one PDF/Word file — not a mix of both.'); return; }
     const subs=DB.submissions(); const sub=subs.find(s=>s.id===subId);
