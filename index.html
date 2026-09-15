@@ -3291,7 +3291,8 @@ function Notifications({user,onOpenPosts,onOpenGroup,onOpenMeetings,onAddStudent
     const seenPost=_seen(user.id,'posts');
     DB.posts().filter(p=>(p.at||0)>seenPost&&!p.groupId).forEach(p=>items.push({t:p.at,txt:'📌 New announcement: '+(p.title||String(p.text||'').slice(0,40)),go:onOpenPosts}));
     const seenTd=_seen(user.id,'ptmsg');
-    DB.messages().filter(m=>(m.parentId===user.id||m.parentBroadcast)&&m.from==='teacher'&&(m.at||0)>seenTd).forEach(m=>items.push({t:m.at,txt:(m.parentBroadcast?'📢 ':'💬 ')+'Teacher: '+String(m.text||'').slice(0,40),go:onOpenChat}));
+    const myGids=DB.groups().filter(g=>(g.students||[]).includes(user.childId)).map(g=>g.id);
+    DB.messages().filter(m=>(m.parentId===user.id||m.parentBroadcast||myGids.includes(m.groupBroadcast))&&m.from==='teacher'&&(m.at||0)>seenTd).forEach(m=>items.push({t:m.at,txt:(m.parentBroadcast||m.groupBroadcast?'📢 ':'💬 ')+'Teacher: '+String(m.text||'').slice(0,40),go:onOpenChat}));
   } else {
     const seenPost=_seen(user.id,'posts');
     DB.posts().filter(p=>(p.at||0)>seenPost&&!p.groupId).forEach(p=>items.push({t:p.at,txt:'📌 New announcement: '+(p.title||String(p.text||'').slice(0,40)),go:onOpenPosts}));
@@ -3573,12 +3574,17 @@ function RecordingsView({user}){
 
 /* ═══════════ PARENT ↔ TEACHER CHAT ═══════════ */
 const PARENT_ALL='__allparents__';
-function ParentChat({parentId,me}){
+function groupParentKey(gid){ return 'grp:'+gid; }
+function ParentChat({parentId,me,myGroupIds}){
   const isAll=parentId===PARENT_ALL;
-  const conv=DB.messages().filter(m=>
-    isAll ? !!m.parentBroadcast                       /* teacher composing to everyone */
-          : (m.parentId===parentId || !!m.parentBroadcast)  /* a parent sees theirs + announcements */
-  ).sort((a,b)=>a.at-b.at);
+  const isGroup=typeof parentId==='string'&&parentId.indexOf('grp:')===0;
+  const groupId=isGroup?parentId.slice(4):null;
+  const myGids=myGroupIds||[];
+  const conv=DB.messages().filter(m=>{
+    if(isAll) return !!m.parentBroadcast;                          /* teacher composing to everyone */
+    if(isGroup) return m.groupBroadcast===groupId;                 /* teacher composing to one class's parents */
+    return (m.parentId===parentId) || !!m.parentBroadcast || myGids.includes(m.groupBroadcast); /* a parent: their own thread + schoolwide + their class's broadcasts */
+  }).sort((a,b)=>a.at-b.at);
   const [msg,setMsg]=useState('');
   const att=useAttach();
   const listRef=useRef(null);
@@ -3590,10 +3596,16 @@ function ParentChat({parentId,me}){
     const all=DB.messages();
     const base={id:uid(),parentId:parentId,from:me,text:body,at:now()};
     if(isAll) base.parentBroadcast=true;
+    if(isGroup) base.groupBroadcast=groupId;
     all.push(Object.assign(base,file));
     DB.save.messages(all); setMsg(''); att.setAtt(null);
     if(me==='teacher'){
       if(isAll) pushNotify('💬 Message to all parents', body.slice(0,120)||'📎 Attachment sent', {role:'parent'});
+      else if(isGroup){
+        const g=DB.groups().find(x=>x.id===groupId);
+        const ids=parentIdsOfStudents((g&&g.students)||[]);
+        if(ids.length) pushNotify('💬 Message to '+(g?g.name:'class')+' parents', body.slice(0,120)||'📎 Attachment sent', {userIds:ids});
+      }
       else pushNotify('💬 Message from the teacher', body.slice(0,120)||'📎 Attachment sent', {userIds:[parentId]});
     } else {
       const pName=(DB.parents().find(p=>p.id===parentId)||{}).name||'A parent';
@@ -3614,11 +3626,11 @@ function ParentChat({parentId,me}){
   return (
     <div className="chat-body" style={{display:'flex',flexDirection:'column',flex:1,minHeight:0}}>
       <div className="chat-list" ref={listRef}>
-        {conv.length===0&&<div className="empty-state">{isAll?'No announcements to parents yet. Anything you send here goes to every parent.':'No messages yet. Say hello 👋'}</div>}
-        {conv.map(m=><div key={m.id} className={"msg "+(m.from===me?'mine':'')}><div className={"msg-bubble "+(m.from===me?'mine':'other')}>{m.parentBroadcast&&<div style={{fontSize:10,opacity:0.6,marginBottom:2}}>📢 To all parents</div>}<MsgBody m={m} canEdit={canEditMsg(m,me)} canDelete={canDeleteMsg(m,me,me==='teacher')} onSave={saveEdit} onDelete={removeMsg}/></div></div>)}
+        {conv.length===0&&<div className="empty-state">{isAll?'No announcements to parents yet. Anything you send here goes to every parent.':isGroup?'No messages to this class\u2019s parents yet.':'No messages yet. Say hello 👋'}</div>}
+        {conv.map(m=><div key={m.id} className={"msg "+(m.from===me?'mine':'')}><div className={"msg-bubble "+(m.from===me?'mine':'other')}>{m.parentBroadcast&&<div style={{fontSize:10,opacity:0.6,marginBottom:2}}>📢 To all parents</div>}{m.groupBroadcast&&<div style={{fontSize:10,opacity:0.6,marginBottom:2}}>📢 To {(DB.groups().find(g=>g.id===m.groupBroadcast)||{}).name||'class'} parents</div>}<MsgBody m={m} canEdit={canEditMsg(m,me)} canDelete={canDeleteMsg(m,me,me==='teacher')} onSave={saveEdit} onDelete={removeMsg}/></div></div>)}
       </div>
       <AttachBar a={att}/>
-      <div className="chat-ir"><AttachBtn a={att}/><input value={msg} onChange={e=>setMsg(e.target.value)} onKeyDown={e=>e.key==='Enter'&&send()} placeholder={me==='parent'?'Message the teacher…':(isAll?'Announcement to ALL parents…':'Reply to parent…')}/><button className="chat-send" onClick={send}>Send</button></div>
+      <div className="chat-ir"><AttachBtn a={att}/><input value={msg} onChange={e=>setMsg(e.target.value)} onKeyDown={e=>e.key==='Enter'&&send()} placeholder={me==='parent'?'Message the teacher…':(isAll?'Announcement to ALL parents…':isGroup?'Message to this class\u2019s parents…':'Reply to parent…')}/><button className="chat-send" onClick={send}>Send</button></div>
     </div>
   );
 }
@@ -3812,10 +3824,14 @@ function WeeklyReminders(){
 }
 
 function TeacherParentsView(){
-  const parents=DB.parents(); const studs=DB.students();
+  const parents=DB.parents(); const studs=DB.students(); const groups=DB.groups();
   const [sel,setSel]=useState(PARENT_ALL);
   const [pane,setPane]=useState('chat');    /* chat | weekly */
   const selParent=parents.find(p=>p.id===sel);
+  const isGroupSel=typeof sel==='string'&&sel.indexOf('grp:')===0;
+  const selGroup=isGroupSel?groups.find(g=>g.id===sel.slice(4)):null;
+  /* Parents whose child is in a given group — so each class's row shows how many will actually receive it. */
+  function parentsOfGroup(g){ const ids=new Set(g.students||[]); return parents.filter(p=>ids.has(p.childId)); }
   return (
     <div className="p-main">
       <div className="p-topbar" style={{gap:8,flexWrap:'wrap'}}>
@@ -3836,6 +3852,12 @@ function TeacherParentsView(){
                   <div style={{width:28,height:28,borderRadius:'50%',background:'var(--coral)',color:'white',display:'flex',alignItems:'center',justifyContent:'center',fontSize:11,fontWeight:700,flexShrink:0}}>📢</div>
                   <div><div style={{fontSize:13,fontWeight:700}}>All Parents</div><div style={{fontSize:10,opacity:0.6}}>Message everyone at once</div></div>
                 </div>
+                {groups.map(g=>{ const n=parentsOfGroup(g).length; const key=groupParentKey(g.id); return (
+                  <div key={g.id} onClick={()=>setSel(key)} style={{padding:'10px 12px',cursor:'pointer',display:'flex',alignItems:'center',gap:8,background:(sel===key)?'var(--paper)':'',borderBottom:'1px solid #eee'}}>
+                    <div style={{width:28,height:28,borderRadius:'50%',background:'var(--chalk-blue)',color:'white',display:'flex',alignItems:'center',justifyContent:'center',fontSize:11,fontWeight:700,flexShrink:0}}>📢</div>
+                    <div><div style={{fontSize:13,fontWeight:700}}>All parents of {g.name}</div><div style={{fontSize:10,opacity:0.6}}>{n} parent{n!==1?'s':''}</div></div>
+                  </div>); })}
+                <div style={{padding:'8px 12px',fontSize:10,fontWeight:700,textTransform:'uppercase',letterSpacing:'0.5px',opacity:0.5,borderTop:'2px solid var(--ink)',marginTop:4}}>Individual parents</div>
                 {parents.map(p=>{ const child=studs.find(s=>s.id===p.childId); return (
                   <div key={p.id} onClick={()=>setSel(p.id)} style={{padding:'10px 12px',cursor:'pointer',background:(sel===p.id)?'var(--paper)':'',borderBottom:'1px solid #eee'}}>
                     <div style={{fontSize:13,fontWeight:700}}>{p.name}</div>
@@ -3845,6 +3867,8 @@ function TeacherParentsView(){
             </div>
             {sel===PARENT_ALL
               ? <ParentChat parentId={PARENT_ALL} me="teacher"/>
+              : isGroupSel
+              ? (selGroup?<ParentChat parentId={sel} me="teacher"/>:<div className="chat-body"><div className="empty-state">This group no longer exists.</div></div>)
               : (selParent&&<ParentChat parentId={selParent.id} me="teacher"/>)}
           </div>
         )}
@@ -3988,6 +4012,7 @@ function ParentPortal({user,onLogout}){
   const [,_s]=useState(0);
   useEffect(()=>{ const fn=()=>_s(x=>x+1); window.addEventListener('zh-data-changed',fn); return ()=>window.removeEventListener('zh-data-changed',fn); },[]);
   const child=DB.students().find(s=>s.id===user.childId);
+  const myGroupIds=child?DB.groups().filter(g=>(g.students||[]).includes(child.id)).map(g=>g.id):[];
   const nowD=new Date();
   const monthStart=new Date(nowD.getFullYear(),nowD.getMonth(),1).getTime();
   const monthName=nowD.toLocaleString('en-GB',{month:'long',year:'numeric'});
@@ -4092,7 +4117,7 @@ function ParentPortal({user,onLogout}){
       {pv==='home'?homeView()
         :pv==='report'?<div className="p-main"><div className="p-topbar"><div className="p-topbar-title">📊 {child?child.name+"'s progress":'Child report'}</div></div>{reportView()}</div>
         :pv==='lessons'?<LessonsView user={user} onManageAccess={()=>{}}/>
-        :pv==='chat'?<div className="p-main"><div className="p-topbar"><div className="p-topbar-title">💬 Chat with teacher</div></div><div className="p-page" style={{display:'flex',flexDirection:'column',flex:1,minHeight:0}}><ParentChat parentId={user.id} me="parent"/></div></div>
+        :pv==='chat'?<div className="p-main"><div className="p-topbar"><div className="p-topbar-title">💬 Chat with teacher</div></div><div className="p-page" style={{display:'flex',flexDirection:'column',flex:1,minHeight:0}}><ParentChat parentId={user.id} me="parent" myGroupIds={myGroupIds}/></div></div>
         :pv==='pw'?<div className="p-main"><div className="p-topbar"><div className="p-topbar-title">🔑 My password</div></div><div className="p-page"><div style={{maxWidth:420,background:'white',border:'2px solid var(--ink)',borderRadius:12,padding:'16px 18px',boxShadow:'3px 3px 0 var(--ink)'}}><ChangePassword user={user} onDone={()=>setPv('home')}/></div></div></div>
         :<PostsView user={user}/>}
     </div>
