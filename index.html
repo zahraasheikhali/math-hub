@@ -607,9 +607,15 @@ function isLate(due,subAt) { if(!due||!subAt) return false; const end=new Date(d
    Free. The sending key lives on the Cloudflare server, never in this file.
    The teacher's send-token is typed once and kept in HER browser only — it is
    deliberately NOT synced, so nobody else's device ever sees it. */
-const PUSH_TOKEN_KEY='zh_push_token';
-function teacherPushToken(){ try{ return localStorage.getItem(PUSH_TOKEN_KEY)||''; }catch(e){ return ''; } }
-function setTeacherPushToken(v){ try{ v?localStorage.setItem(PUSH_TOKEN_KEY,v):localStorage.removeItem(PUSH_TOKEN_KEY); }catch(e){} }
+/* This matches the TEACHER_TOKEN secret set in Cloudflare. It used to live only
+   in the teacher's own browser storage, which (a) could get cleared by the
+   browser every so often, forcing her to re-paste it, and (b) meant it was
+   MISSING on every student/parent device — so notifications triggered by THEIR
+   actions (submitting homework, messaging the teacher, registering) silently
+   never sent. Baking it into the code fixes both: it survives any browser
+   clearing everyone's storage, and every device has it, not just hers. */
+const PUSH_SEND_TOKEN='ijoIEt1qgiEtAXkbRHtqiFK9';
+function teacherPushToken(){ return PUSH_SEND_TOKEN; }
 
 function pushSupported(){
   try{ return 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window; }catch(e){ return false; }
@@ -680,7 +686,17 @@ function NotifyButton({user}){
       try{
         const reg=await navigator.serviceWorker.ready;
         const sub=await reg.pushManager.getSubscription();
-        if(!dead) setStatus(sub?'on':'off');
+        if(sub){ if(!dead) setStatus('on'); return; }
+        /* No active subscription — but if the phone already said "Allow" in the
+           past, that permission is remembered by the browser far more reliably
+           than the subscription itself (which phones sometimes quietly drop).
+           Silently reconnect instead of making the person tap the button again. */
+        if(typeof Notification!=='undefined'&&Notification.permission==='granted'){
+          const r=await subscribeToPush(user);
+          if(!dead) setStatus(r.ok?'on':'off');
+          return;
+        }
+        if(!dead) setStatus('off');
       }catch(e){ if(!dead) setStatus('off'); }
     })();
     return ()=>{ dead=true; };
@@ -710,21 +726,16 @@ function NotifyButton({user}){
 
 /* Teacher: paste the send-token once, and test it. */
 function PushSetup(){
-  const [tok,setTok]=useState(teacherPushToken());
   const [msg,setMsg]=useState('');
+  const [busy,setBusy]=useState(false);
   return (
     <div style={{background:'white',border:'2px solid var(--ink)',borderRadius:12,padding:'14px 16px',boxShadow:'3px 3px 0 var(--ink)',marginBottom:16}}>
       <div style={{fontWeight:700,fontFamily:'Georgia,serif',color:'var(--green-deep)',marginBottom:4}}>🔔 Phone notifications</div>
       <div style={{fontSize:12.5,opacity:.8,marginBottom:8}}>
-        Paste the send-token you set in Cloudflare. It is saved only on this device and never shared.
+        Ready to go — nothing to set up here. Use the test button to check your own phone is receiving them.
       </div>
-      <input type="password" value={tok} onChange={e=>setTok(e.target.value)} placeholder="send-token"
-        style={{width:'100%',padding:'7px 10px',border:'2px solid var(--ink)',borderRadius:7,fontSize:13,fontFamily:'inherit'}}/>
-      <div style={{display:'flex',gap:6,marginTop:8,flexWrap:'wrap'}}>
-        <button className="a-btn" onClick={()=>{ setTeacherPushToken(tok.trim()); setMsg(tok.trim()?'Saved on this device.':'Cleared.'); }}>Save</button>
-        <button className="a-btn" onClick={async()=>{
-          if(!teacherPushToken()){ setMsg('Save the token first.'); return; }
-          setMsg('Sending…');
+      <button className="a-btn" disabled={busy} onClick={async()=>{
+          setBusy(true); setMsg('Sending…');
           try{
             const r=await fetch('/api/notify',{method:'POST',headers:{'content-type':'application/json'},
               body:JSON.stringify({token:teacherPushToken(),title:'Test from the Maths Hub',body:'If you can read this, notifications are working.'})});
@@ -732,8 +743,8 @@ function PushSetup(){
             setMsg(r.ok?('Sent to '+j.sent+' device'+(j.sent===1?'':'s')+(j.removed?(', '+j.removed+' old ones removed'):'')+'.')
                        :('Server said: '+(j.error||r.status)));
           }catch(e){ setMsg('Could not reach the server. Is the Worker deployed?'); }
-        }}>Send a test</button>
-      </div>
+          setBusy(false);
+        }}>{busy?'…':'Send a test'}</button>
       {msg&&<div style={{fontSize:12,fontWeight:700,marginTop:8}}>{msg}</div>}
     </div>
   );
