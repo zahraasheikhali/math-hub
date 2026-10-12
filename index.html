@@ -4249,7 +4249,10 @@ const WORKSHEETS=[
   {n:57,t:'Probability',f:'57__Probability.pdf',m:47},
   {n:58,t:'Tree Probability',f:'58__Tree_Probability.pdf',m:63},
 ];
-function worksheetUrl(f){ return window.location.origin+'/worksheets/'+encodeURIComponent(f)+'?v='+WORKSHEETS_VER; }
+/* The folder on the site is called "worksheet" (singular) — keep this in step
+   with whatever the folder in GitHub is actually named. */
+const WORKSHEETS_DIR = 'worksheet';
+function worksheetUrl(f){ return window.location.origin+'/'+WORKSHEETS_DIR+'/'+encodeURIComponent(f)+'?v='+WORKSHEETS_VER; }
 function worksheetTitle(f){ const w=WORKSHEETS.find(x=>x.f===f); return w?(w.n+'. '+w.t):f; }
 
 const SLIDES_VER = 12;
