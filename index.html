@@ -644,12 +644,40 @@ async function subscribeToPush(user){
   }
 }
 /* Send a notification. Silently does nothing if the teacher has not set her token. */
+/* The server sends to ~40 phones per call (Cloudflare's free-plan limit) and
+   says where it stopped; we keep calling until everyone has been reached. */
+async function pushSend(title,body,opts){
+  const tot={sent:0,removed:0,failed:0,total:0,error:null};
+  let offset=0;
+  for(let round=0;round<30;round++){
+    const r=await fetch('/api/notify',{method:'POST',headers:{'content-type':'application/json'},
+      body:JSON.stringify(Object.assign({token:teacherPushToken(),title,body},opts||{},{offset}))});
+    const j=await r.json().catch(()=>({}));
+    if(!r.ok){ tot.error=j.error||('HTTP '+r.status); break; }
+    tot.sent+=j.sent||0; tot.removed+=j.removed||0; tot.failed+=j.failed||0; tot.total=j.total||tot.total;
+    if(j.next==null) break;
+    offset=j.next;
+  }
+  return tot;
+}
 async function pushNotify(title,body,opts){
   const token=teacherPushToken(); if(!token) return;
+  try{ await pushSend(title,body,opts); }catch(e){}
+}
+/* Tell the server "this phone is still here, and belongs to this person".
+   Done every time the app opens or comes back to the front, so a phone the
+   server lost (or that changed hands between parent and child) heals itself. */
+async function refreshPushRegistration(user){
   try{
-    await fetch('/api/notify',{method:'POST',headers:{'content-type':'application/json'},
-      body:JSON.stringify(Object.assign({token,title,body},opts||{}))});
-  }catch(e){}
+    if(!pushSupported()||!user||Notification.permission!=='granted') return false;
+    const reg=await navigator.serviceWorker.ready;
+    const sub=await reg.pushManager.getSubscription();
+    if(!sub) return false;
+    const j=sub.toJSON();
+    const res=await fetch('/api/subscribe',{method:'POST',headers:{'content-type':'application/json'},
+      body:JSON.stringify({endpoint:j.endpoint,keys:j.keys,role:user.role,userId:user.id})});
+    return res.ok;
+  }catch(e){ return false; }
 }
 /* Parents of a given list of student ids. */
 function parentIdsOfStudents(studentIds){
@@ -686,7 +714,7 @@ function NotifyButton({user}){
       try{
         const reg=await navigator.serviceWorker.ready;
         const sub=await reg.pushManager.getSubscription();
-        if(sub){ if(!dead) setStatus('on'); return; }
+        if(sub){ await refreshPushRegistration(user); if(!dead) setStatus('on'); return; }
         /* No active subscription — but if the phone already said "Allow" in the
            past, that permission is remembered by the browser far more reliably
            than the subscription itself (which phones sometimes quietly drop).
@@ -699,7 +727,14 @@ function NotifyButton({user}){
         if(!dead) setStatus('off');
       }catch(e){ if(!dead) setStatus('off'); }
     })();
-    return ()=>{ dead=true; };
+    let last=Date.now();
+    const onShow=()=>{
+      if(document.visibilityState!=='visible') return;
+      if(Date.now()-last<30*60*1000) return;          /* at most every half hour */
+      last=Date.now(); refreshPushRegistration(user);
+    };
+    document.addEventListener('visibilitychange',onShow);
+    return ()=>{ dead=true; document.removeEventListener('visibilitychange',onShow); };
   },[]);
   if(status==='unsupported'||status==='checking') return null;
   async function turnOn(){
@@ -737,11 +772,11 @@ function PushSetup(){
       <button className="a-btn" disabled={busy} onClick={async()=>{
           setBusy(true); setMsg('Sending…');
           try{
-            const r=await fetch('/api/notify',{method:'POST',headers:{'content-type':'application/json'},
-              body:JSON.stringify({token:teacherPushToken(),title:'Test from the Maths Hub',body:'If you can read this, notifications are working.'})});
-            const j=await r.json();
-            setMsg(r.ok?('Sent to '+j.sent+' device'+(j.sent===1?'':'s')+(j.removed?(', '+j.removed+' old ones removed'):'')+'.')
-                       :('Server said: '+(j.error||r.status)));
+            const t=await pushSend('Test from the Maths Hub','If you can read this, notifications are working.');
+            setMsg(t.error?('Server said: '+t.error)
+              :('Sent to '+t.sent+' of '+t.total+' device'+(t.total===1?'':'s')
+                +(t.removed?(', '+t.removed+' old ones removed'):'')
+                +(t.failed?(', '+t.failed+' failed'):'')+'.'));
           }catch(e){ setMsg('Could not reach the server. Is the Worker deployed?'); }
           setBusy(false);
         }}>{busy?'…':'Send a test'}</button>
@@ -1807,6 +1842,7 @@ function PortalApp({user,onLogout,topics,progress,toggleDone,addQuestion,deleteQ
         <div className={"p-nav-item "+(view==='home'?'active':'')} onClick={openHome}>🏠 Home</div>
         <div className={"p-nav-item "+(view==='ebook'?'active':'')} onClick={()=>{setView('ebook');setEbookTopic(null);setDotsOpen(null);}}>📖 eBook</div>
         {!userIsEbookOnly(user)&&<div className={"p-nav-item "+(view==='lessons'?'active':'')} onClick={()=>{setView('lessons');setDotsOpen(null);}}>📊 Lessons</div>}
+        {isT&&<div className={"p-nav-item "+(view==='worksheets'?'active':'')} onClick={()=>{setView('worksheets');setDotsOpen(null);}}>📄 Worksheets</div>}
         <div className={"p-nav-item "+(view==='posts'?'active':'')} onClick={()=>{setView('posts');setDotsOpen(null);}}>📌 Announcements</div>
         <div className={"p-nav-item "+(view==='recordings'?'active':'')} onClick={()=>{setView('recordings');setDotsOpen(null);}}>🎬 Recordings</div>
         {isT&&<div className={"p-nav-item "+(view==='parents'?'active':'')} onClick={()=>{setView('parents');setDotsOpen(null);}}>👪 Parents</div>}
@@ -2038,6 +2074,11 @@ function PortalApp({user,onLogout,topics,progress,toggleDone,addQuestion,deleteQ
         <AssignForm groupId={id} atype={extra} onDone={close}/>
       </Modal>
     );
+    if(type==='assignWorksheet') return (
+      <Modal title="Assign a worksheet" onClose={close}>
+        <AssignWorksheetForm worksheetFile={id} onDone={close}/>
+      </Modal>
+    );
     if(type==='editAssign') return (
       <Modal title={"Edit assignment"} onClose={close}>
         <AssignForm assignId={id} onDone={close}/>
@@ -2160,7 +2201,7 @@ function PortalApp({user,onLogout,topics,progress,toggleDone,addQuestion,deleteQ
   return (
     <div className="portal-layout" onClick={()=>dotsOpen&&setDotsOpen(null)}>
       {sidebar}
-      {view==='home'?portalHome():view==='ebook'?ebookView():view==='lessons'?(userIsEbookOnly(user)?<div className="p-main"><div className="p-topbar"><div className="p-topbar-title">📊 Lessons</div></div><div className="p-page"><div className="empty-state">Your class uses the eBook rather than the lesson slides. Open 📖 eBook from the menu.</div></div></div>:<LessonsView user={user} onManageAccess={()=>setView('access')}/>):view==='access'?<AccessView/>:view==='posts'?postsView():view==='recordings'?recordingsView():view==='parents'?<TeacherParentsView/>:view==='registrations'?<RegistrationsView/>:groupView()}
+      {view==='home'?portalHome():view==='ebook'?ebookView():view==='lessons'?(userIsEbookOnly(user)?<div className="p-main"><div className="p-topbar"><div className="p-topbar-title">📊 Lessons</div></div><div className="p-page"><div className="empty-state">Your class uses the eBook rather than the lesson slides. Open 📖 eBook from the menu.</div></div></div>:<LessonsView user={user} onManageAccess={()=>setView('access')}/>):view==='worksheets'?(isT?<WorksheetsView onAssign={(w)=>setModal({type:'assignWorksheet',id:w.f})}/>:<div className="p-main"><div className="p-page"><div className="empty-state">Not available.</div></div></div>):view==='access'?<AccessView/>:view==='posts'?postsView():view==='recordings'?recordingsView():view==='parents'?<TeacherParentsView/>:view==='registrations'?<RegistrationsView/>:groupView()}
       {renderModal()}
       {manageStudentsOverlay}
       {assignStudentOverlay}
@@ -2356,6 +2397,7 @@ function AssignView({type,groupId,user,onModal,tick,refresh,onReview}) {
                   Total marks: <strong>{a.totalMark}</strong>
                   {a.dueDate&&<> · Due: <strong>{fmtDate(new Date(a.dueDate).getTime())}</strong></>}
                 </div>
+                {a.worksheetFile&&<CorrectionBox name={worksheetTitle(a.worksheetFile)} url={worksheetUrl(a.worksheetFile)} label="Worksheet"/>}
                 {a.fileName&&<CorrectionBox name={a.fileName} data={a.fileData} fileId={a.fileDataId} label="Worksheet"/>}
                 {a.description&&<div style={{fontSize:13,opacity:0.75,marginTop:4}}>{a.description}</div>}
               </div>
@@ -4141,6 +4183,75 @@ const SLIDES_HOSTED = true;  /* full build: slides bundled. Lite build sets this
    ~24h INCLUDING failures, so after the slides were deleted it kept serving the
    old "can't open this presentation" error. Bump this number by 1 and re-deploy
    any time you replace or re-upload files in /slides/ — it forces a fresh fetch. */
+/* ═══════════ WORKSHEETS ═══════════
+   One PDF per topic, sitting in /worksheets/ on the site itself — NOT in
+   Firebase. The teacher assigns one as homework and only its file name is
+   stored on the assignment, so a worksheet given to five classes still costs
+   nothing and loads straight from the site. */
+const WORKSHEETS_VER = 1;
+const WORKSHEETS=[
+  {n:1,t:'Expanding Brackets',f:'01__Expanding_Brackets.pdf',m:20},
+  {n:2,t:'Prime Factors, LCM & HCF',f:'02__Prime_Factors_LCM_HCF.pdf',m:53},
+  {n:3,t:'Linear Equations',f:'03__Linear_Equations.pdf',m:51},
+  {n:4,t:'Factorising & Quadratics',f:'04__Factorising_and_Quadratics.pdf',m:30},
+  {n:5,t:'Completing the Square',f:'05__Completing_the_Square.pdf',m:26},
+  {n:6,t:'Fractions',f:'06__Fractions.pdf',m:33},
+  {n:7,t:'Algebraic Fractions',f:'07__Algebraic_Fractions.pdf',m:50},
+  {n:8,t:'Simultaneous Equations',f:'08__Simultaneous_Equations.pdf',m:30},
+  {n:9,t:'Quadratic Simultaneous',f:'09__Quadratic_Simultaneous.pdf',m:31},
+  {n:10,t:'Linear Inequalities',f:'10__Linear_Inequalities.pdf',m:32},
+  {n:11,t:'Quadratic Inequalities',f:'11__Quadratic_Inequalities.pdf',m:32},
+  {n:12,t:'Rearranging Formulae',f:'12__Rearranging_Formulae.pdf',m:45},
+  {n:13,t:'Inequalities on Graphs',f:'13__Inequalities_on_Graphs.pdf',m:41},
+  {n:14,t:'Standard Form',f:'14__Standard_Form.pdf',m:25},
+  {n:15,t:'Recurring Decimals',f:'15__Recurring_Decimals.pdf',m:19},
+  {n:16,t:'Percentages',f:'16__Percentages.pdf',m:80},
+  {n:17,t:'Simple & Compound Interest',f:'17__Simple_and_Compound_Int.pdf',m:27},
+  {n:18,t:'Ratio',f:'18__Ratio.pdf',m:42},
+  {n:19,t:'Direct & Inverse Proportion',f:'19__Direct_and_Inverse_Prop.pdf',m:54},
+  {n:20,t:'Proof',f:'20__Proof.pdf',m:61},
+  {n:21,t:'Indices',f:'21__Indices.pdf',m:47},
+  {n:22,t:'Surds',f:'22__Surds.pdf',m:53},
+  {n:23,t:'Bounds',f:'23__Bounds.pdf',m:40},
+  {n:24,t:'Measures',f:'24__Measures.pdf',m:50},
+  {n:25,t:'Angles & Polygons',f:'25__Angles_and_Polygons.pdf',m:54},
+  {n:26,t:'Straight-Line Equations',f:'26__Straight_Line_Equations.pdf',m:42},
+  {n:27,t:'Perpendicular & Parallel Lines',f:'27__Perp_and_Parallel_Lines.pdf',m:56},
+  {n:28,t:'Sketching Graphs 1',f:'28__Sketching_Graphs_1.pdf',m:17},
+  {n:29,t:'Transformations of Shapes',f:'29__Transformations_of_Shapes.pdf',m:57},
+  {n:30,t:'Sketching Graphs 2',f:'30__Sketching_Graphs_2.pdf',m:23},
+  {n:31,t:'Circle Theorems',f:'31__Circle_Theorems.pdf',m:57},
+  {n:32,t:'Chord Theorems',f:'32__Chord_Theorems.pdf',m:35},
+  {n:33,t:'Pythagoras\u2019 Theorem',f:'33__Pythagoras_Theorem.pdf',m:53},
+  {n:34,t:'Trigonometry',f:'34__Trigonometry.pdf',m:58},
+  {n:35,t:'Sine & Cosine Rules',f:'35__Sine_and_Cosine_Rules.pdf',m:61},
+  {n:36,t:'3D Trigonometry',f:'36__3D_Trigonometry.pdf',m:51},
+  {n:37,t:'Bearings',f:'37__Bearings.pdf',m:34},
+  {n:38,t:'Constructions',f:'38__Constructions.pdf',m:37},
+  {n:39,t:'Area & Perimeter',f:'39__Area_and_Perimeter.pdf',m:84},
+  {n:40,t:'Sectors',f:'40__Sectors.pdf',m:48},
+  {n:41,t:'Volume & Surface Area',f:'41__Volume_and_Surface_Area.pdf',m:37},
+  {n:42,t:'Cones, Spheres & Cylinders',f:'42__Cones_Spheres_and_Cylinders.pdf',m:56},
+  {n:43,t:'Similar Shapes',f:'43__Similar_Shapes.pdf',m:34},
+  {n:44,t:'Similar Shapes 2',f:'44__Similar_Shapes_2.pdf',m:42},
+  {n:45,t:'Differentiation',f:'45__Differentiation.pdf',m:70},
+  {n:46,t:'Kinematics',f:'46__Kinematics.pdf',m:56},
+  {n:47,t:'Functions',f:'47__Functions.pdf',m:98},
+  {n:48,t:'Graph Transformations',f:'48__Graph_Transformations.pdf',m:47},
+  {n:49,t:'Vectors',f:'49__Vectors.pdf',m:66},
+  {n:50,t:'Sequences & Nth Term',f:'50__Sequences_Nth_Term.pdf',m:62},
+  {n:51,t:'Arithmetic Sequences & Series',f:'51__Arithmetic_Sequences_and_Series.pdf',m:62},
+  {n:52,t:'Venn Diagrams & Sets',f:'52__Venn_Diagrams_and_Sets.pdf',m:56},
+  {n:53,t:'Averages',f:'53__Averages.pdf',m:53},
+  {n:54,t:'Frequency Tables',f:'54__Frequency_Tables.pdf',m:15},
+  {n:55,t:'Cumulative Frequency',f:'55__Cumulative_Frequency.pdf',m:48},
+  {n:56,t:'Histograms',f:'56__Histograms.pdf',m:46},
+  {n:57,t:'Probability',f:'57__Probability.pdf',m:47},
+  {n:58,t:'Tree Probability',f:'58__Tree_Probability.pdf',m:63},
+];
+function worksheetUrl(f){ return window.location.origin+'/worksheets/'+encodeURIComponent(f)+'?v='+WORKSHEETS_VER; }
+function worksheetTitle(f){ const w=WORKSHEETS.find(x=>x.f===f); return w?(w.n+'. '+w.t):f; }
+
 const SLIDES_VER = 12;
 const LESSONS=[
   {n:1,t:'Expanding Brackets',f:'1__Expanding_Brackets.pptx'},
@@ -4202,6 +4313,128 @@ const LESSONS=[
   {n:57,t:'Probability',f:'57__Probability.pptx'},
   {n:58,t:'Tree Probability',f:'58__Tree_Probability.pptx'},
 ];
+/* ═══════════ WORKSHEETS PAGE (teacher only) ═══════════
+   58 ready-made PDFs. The ⋮ beside each one assigns it to any class as
+   homework or a mock, with its own due date and marks. */
+function WorksheetsView({onAssign}){
+  const [q,setQ]=useState('');
+  const [open,setOpen]=useState(null);     /* which ⋮ menu is open */
+  const [preview,setPreview]=useState(null);
+  const needle=q.trim().toLowerCase();
+  const list=needle?WORKSHEETS.filter(w=>(w.n+'. '+w.t).toLowerCase().includes(needle)):WORKSHEETS;
+  const assigns=DB.assignments();
+  const groups=DB.groups();
+  const usedBy=(f)=>assigns.filter(a=>a.worksheetFile===f);
+  return (
+    <div className="p-main" onClick={()=>setOpen(null)}>
+      <div className="p-topbar"><div className="p-topbar-title">📄 Worksheets</div></div>
+      <div className="p-page">
+        <div style={{fontSize:13,opacity:0.75,marginBottom:10}}>
+          One worksheet for each of the 58 topics. Use the ⋮ beside a worksheet to set it as homework for a class — the students get the PDF inside the homework and a notification on their phone.
+        </div>
+        <input value={q} onChange={e=>setQ(e.target.value)} placeholder="🔍 Search worksheets…"
+          style={{width:'100%',maxWidth:420,padding:'8px 12px',border:'2px solid var(--ink)',borderRadius:8,fontSize:14,fontFamily:'inherit',marginBottom:14}}/>
+        <div style={{fontSize:12,opacity:0.6,marginBottom:10}}>Showing {list.length} of {WORKSHEETS.length}</div>
+        {list.length===0&&<div className="empty-state">No worksheet matches “{q}”.</div>}
+        {list.map(w=>{
+          const used=usedBy(w.f);
+          return (
+            <div key={w.f} className="a-card" style={{marginBottom:10}}>
+              <div style={{display:'flex',alignItems:'center',gap:12}}>
+                <div style={{width:38,height:38,flexShrink:0,borderRadius:9,background:'var(--green-deep)',color:'#fff',display:'flex',alignItems:'center',justifyContent:'center',fontWeight:700,fontSize:14}}>{w.n}</div>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{fontWeight:700,fontSize:15}}>{w.t} <span style={{fontWeight:600,fontSize:12,opacity:0.65}}>· {w.m} marks</span></div>
+                  <div style={{fontSize:12,opacity:0.6}}>
+                    {used.length
+                      ? ('Given to '+used.map(a=>{const g=groups.find(x=>x.id===a.groupId);return g?g.name:'a class';}).filter((v,i,arr)=>arr.indexOf(v)===i).join(', '))
+                      : 'Not given to any class yet'}
+                  </div>
+                </div>
+                <button className="a-btn" style={{fontSize:12,flexShrink:0}} onClick={()=>setPreview(preview===w.f?null:w.f)}>{preview===w.f?'✕ Hide':'👁 Preview'}</button>
+                <div className="p-dots-btn" style={{color:'var(--ink)'}} onClick={e=>{e.stopPropagation();setOpen(open===w.f?null:w.f);}}>
+                  ⋮
+                  {open===w.f&&(
+                    <div className="p-dots-menu" style={{textAlign:'left'}}>
+                      <div className="p-dots-item" onClick={()=>{setOpen(null);onAssign(w);}}>📤 Assign to a class</div>
+                      <div className="p-dots-item" onClick={()=>{setOpen(null);setPreview(preview===w.f?null:w.f);}}>👁 Preview the worksheet</div>
+                      <a className="p-dots-item" href={worksheetUrl(w.f)} download={'Worksheet '+w.n+' - '+w.t+'.pdf'} style={{display:'block',textDecoration:'none',color:'inherit'}} onClick={()=>setOpen(null)}>⬇ Download the PDF</a>
+                      <a className="p-dots-item" href={worksheetUrl(w.f)} target="_blank" rel="noreferrer" style={{display:'block',textDecoration:'none',color:'inherit'}} onClick={()=>setOpen(null)}>↗ Open in a new tab</a>
+                    </div>
+                  )}
+                </div>
+              </div>
+              {preview===w.f&&<PdfView url={worksheetUrl(w.f)}/>}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/* The form behind ⋮ → Assign to a class. Several classes can be ticked at once;
+   each one gets its own homework, so marks and submissions stay separate. */
+function AssignWorksheetForm({worksheetFile,onDone}){
+  const w=WORKSHEETS.find(x=>x.f===worksheetFile)||{n:'',t:worksheetFile,f:worksheetFile};
+  const groups=DB.groups();
+  const [picked,setPicked]=useState([]);
+  /* The worksheet prints its own total in the Grade box, so the marks are filled
+     in already — she can still change them if she sets only part of it. */
+  const [f,setF]=useState({type:'homework',title:w.t,desc:'',marks:w.m||'',due:''});
+  const [err,setErr]=useState('');
+  const toggle=(id)=>setPicked(p=>p.includes(id)?p.filter(x=>x!==id):p.concat(id));
+  function submit(){
+    if(!picked.length){ setErr('Choose at least one class.'); return; }
+    if(!f.title.trim()||!f.marks){ setErr('Please fill in the title and the total marks.'); return; }
+    if(Number(f.marks)<=0){ setErr('Total marks must be more than 0.'); return; }
+    const assigns=DB.assignments();
+    picked.forEach(gid=>{
+      assigns.push({id:uid(),groupId:gid,type:f.type,title:f.title.trim(),description:f.desc,
+        totalMark:Number(f.marks),dueDate:f.due||null,
+        worksheetFile:w.f,                       /* the PDF stays on the site */
+        fileName:null,fileData:null,correctedFile:null,createdAt:now()});
+      const label=f.type==='mock'?'mock exam':'homework';
+      notifyGroup(gid,
+        'New '+label, f.title.trim()+(f.due?(' — due '+fmtDue(f.due)):'')+'. Open the Maths Hub to see the worksheet.',
+        'New '+label+' uploaded', 'New '+label+' has been uploaded for your child — '+f.title.trim()+'.');
+    });
+    DB.save.assignments(assigns);
+    onDone();
+  }
+  return (
+    <>
+      <div style={{background:'#DCEFE3',border:'2px solid #22c55e',borderRadius:10,padding:'9px 13px',fontSize:13,fontWeight:700,color:'#1F6B43',marginBottom:12}}>
+        📄 Worksheet {w.n}: {w.t}{w.m?(' · '+w.m+' marks'):''}
+      </div>
+      <div className="mfield">
+        <label>Give it to</label>
+        {groups.length===0&&<div style={{fontSize:13,opacity:0.7}}>You have no classes yet — create one first.</div>}
+        {groups.map(g=>(
+          <div key={g.id} onClick={()=>toggle(g.id)} style={{display:'flex',alignItems:'center',gap:9,padding:'8px 10px',marginBottom:5,cursor:'pointer',
+            border:'2px solid '+(picked.includes(g.id)?'var(--green-deep)':'#ddd'),borderRadius:8,
+            background:picked.includes(g.id)?'#DCEFE3':'white'}}>
+            <input type="checkbox" readOnly checked={picked.includes(g.id)} style={{width:16,height:16}}/>
+            <span style={{fontWeight:600,fontSize:14}}>{g.name}</span>
+            <span style={{fontSize:12,opacity:0.6}}>{(g.students||[]).length} student{(g.students||[]).length!==1?'s':''}</span>
+          </div>
+        ))}
+      </div>
+      <div className="mfield"><label>Set it as</label>
+        <select value={f.type} onChange={e=>setF({...f,type:e.target.value})}>
+          <option value="homework">Homework</option>
+          <option value="mock">Mock exam</option>
+        </select>
+      </div>
+      <div className="mfield"><label>Title</label><input value={f.title} onChange={e=>setF({...f,title:e.target.value})} placeholder="Homework title"/></div>
+      <div className="mfield"><label>Instructions (optional)</label><textarea value={f.desc} onChange={e=>setF({...f,desc:e.target.value})} placeholder="e.g. Answer questions 1 to 8 only."/></div>
+      <div className="mfield"><label>Total marks</label><input type="number" min="1" value={f.marks} onChange={e=>setF({...f,marks:e.target.value})} placeholder="e.g. 20"/></div>
+      <div className="mfield"><label>Due date</label><input type="date" value={f.due} onChange={e=>setF({...f,due:e.target.value})}/></div>
+      {err&&<div className="merr">{err}</div>}
+      <button className="mbtn" onClick={submit}>Give to {picked.length||'…'} class{picked.length===1?'':'es'}</button>
+    </>
+  );
+}
+
 function LessonsView({user,onManageAccess}){
   const [openL,setOpenL]=useState(null);
   const [lockMsg,setLockMsg]=useState(false);
@@ -4296,17 +4529,22 @@ function LessonsView({user,onManageAccess}){
 
 /* ═══════════ CORRECTION VIEWER (student: view inline + download) ═══════════ */
 /* ═══════════ PDF VIEWER (renders pages via PDF.js — works on phones) ═══════════ */
-function PdfView({data}){
+function PdfView({data,url}){
   const ref=useRef(null); const [err,setErr]=useState(''); const [busy,setBusy]=useState(true);
   useEffect(()=>{
     let cancelled=false;
     (async()=>{
       try{
         setBusy(true); setErr('');
-        if(!data||!window.pdfjsLib){ setErr('PDF viewer not ready — use Download.'); setBusy(false); return; }
-        const b64=(data.split(',')[1])||''; const bin=atob(b64);
-        const bytes=new Uint8Array(bin.length); for(let i=0;i<bin.length;i++) bytes[i]=bin.charCodeAt(i);
-        const pdf=await pdfjsLib.getDocument({data:bytes}).promise;
+        if((!data&&!url)||!window.pdfjsLib){ setErr('PDF viewer not ready — use Download.'); setBusy(false); return; }
+        let task;
+        if(url){ task=pdfjsLib.getDocument(url); }
+        else{
+          const b64=(data.split(',')[1])||''; const bin=atob(b64);
+          const bytes=new Uint8Array(bin.length); for(let i=0;i<bin.length;i++) bytes[i]=bin.charCodeAt(i);
+          task=pdfjsLib.getDocument({data:bytes});
+        }
+        const pdf=await task.promise;
         if(cancelled) return;
         const cont=ref.current; if(!cont) return; cont.innerHTML='';
         const width=cont.clientWidth||700;
@@ -4326,7 +4564,7 @@ function PdfView({data}){
       }catch(e){ if(!cancelled){ setErr('Could not display this PDF here — tap Download to open it.'); setBusy(false); } }
     })();
     return ()=>{ cancelled=true; };
-  },[data]);
+  },[data,url]);
   return (
     <div style={{marginTop:10}}>
       {busy&&<div style={{fontSize:12,opacity:0.6,marginBottom:6}}>⏳ Rendering PDF…</div>}
@@ -4695,7 +4933,14 @@ function dataUrlToBlobUrl(d){
 
 /* One shared viewer for every uploaded file: images inline, PDFs via PDF.js,
    anything else gets Download + Open-in-new-tab instead of a blank iframe. */
-function FileView({data,name,fileId}){
+function FileView({data,name,fileId,url}){
+  /* A worksheet lives on the site, so it is shown straight from its address. */
+  if(url) return (
+    <div>
+      <PdfView url={url}/>
+      <div style={{marginTop:8}}><a className="a-btn" href={url} download={name||'worksheet.pdf'} style={{fontSize:11,padding:'4px 10px',textDecoration:'none'}}>⬇ Download</a></div>
+    </div>
+  );
   /* Files load only when someone actually opens one. */
   const [fetched,setFetched]=useState(null);
   useEffect(()=>{
@@ -4756,10 +5001,10 @@ function DownloadBtn({data,fileId,name,className,style,label}){
   }}>{busy?'\u23f3 Loading\u2026':(label||'\u2b07 Download')}</button>;
 }
 
-function CorrectionBox({name,data,label,fileId}){
+function CorrectionBox({name,data,label,fileId,url}){
   const [show,setShow]=useState(false);
   const [slow,setSlow]=useState(false);
-  const ready=!!(data||fileId);
+  const ready=!!(data||fileId||url);
   useEffect(()=>{ if(!ready){ const t=setTimeout(()=>setSlow(true),9000); return ()=>clearTimeout(t); } setSlow(false); },[ready]);
   return (
     <div style={{marginTop:8,padding:'10px 14px',background:'#DCEFE3',border:'2px solid #22c55e',borderRadius:10}}>
@@ -4767,12 +5012,14 @@ function CorrectionBox({name,data,label,fileId}){
         <span style={{fontSize:13,fontWeight:700,color:'#1F6B43'}}>📄 {label||'Correction'}: {name}</span>
         {ready?(<>
           <button className="a-btn" onClick={()=>setShow(s=>!s)} style={{fontSize:11,padding:'4px 10px'}}>{show?'✕ Hide':'👁 View'}</button>
-          <DownloadBtn data={data} fileId={fileId} name={name} style={{fontSize:11,padding:'4px 10px',background:'#1F6B43',color:'white',borderColor:'#1F6B43'}}/>
+          {url
+            ? <a className="a-btn" href={url} download={name} style={{fontSize:11,padding:'4px 10px',background:'#1F6B43',color:'white',borderColor:'#1F6B43',textDecoration:'none'}}>⬇ Download</a>
+            : <DownloadBtn data={data} fileId={fileId} name={name} style={{fontSize:11,padding:'4px 10px',background:'#1F6B43',color:'white',borderColor:'#1F6B43'}}/>}
         </>):(slow
           ? <span style={{fontSize:11,color:'#b45309'}}>⚠ This file couldn't load — it may need to be uploaded again.</span>
           : <span style={{fontSize:11,opacity:0.7}}>⏳ Loading…</span>)}
       </div>
-      {show&&ready&&<FileView data={data} name={name} fileId={fileId}/>}
+      {show&&ready&&<FileView data={data} name={name} fileId={fileId} url={url}/>}
     </div>
   );
 }

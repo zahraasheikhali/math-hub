@@ -2,7 +2,7 @@
    A Cloudflare Worker. It does three things and nothing else:
      POST /api/subscribe   a phone registers itself
      POST /api/unsubscribe a phone opts out
-     POST /api/notify      the teacher sends a notification to everyone
+     POST /api/notify      the teacher sends a notification (in batches of ~40 phones)
    Everything else falls through to the website's normal files.
 
    The VAPID private key and the teacher token are SECRETS set in the
@@ -104,6 +104,17 @@ async function sendOne(sub, text, env) {
   });
 }
 
+/* ---- storage ----
+   Each phone is stored under 'sub:<hash of endpoint>'. The whole subscription is
+   ALSO kept in the key's metadata, so one list() call returns every phone at once.
+   Why it matters: Cloudflare's free plan allows only 50 outside calls per request,
+   and KV reads count. The old version did a read AND a send per phone, so past
+   ~24 phones the rest silently got nothing. */
+const subKey = async (endpoint) =>
+  'sub:' + bytesToB64url(new Uint8Array(await crypto.subtle.digest('SHA-256', enc.encode(endpoint)))).slice(0, 32);
+
+const BUDGET = 45;          /* outside calls we allow ourselves per request (limit is 50) */
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
@@ -114,22 +125,31 @@ export default {
 
     if (url.pathname === '/api/subscribe' && request.method === 'POST') {
       const sub = await request.json().catch(() => null);
-      if (!sub || !sub.endpoint || !sub.keys) return json({ error: 'bad subscription' }, 400);
-      const id = bytesToB64url(new Uint8Array(await crypto.subtle.digest('SHA-256', enc.encode(sub.endpoint)))).slice(0, 32);
-      await env.PUSH_SUBS.put('sub:' + id, JSON.stringify({
-        endpoint: sub.endpoint, keys: sub.keys,
-        role: String(sub.role || 'student').slice(0, 12),
-        userId: String(sub.userId || '').slice(0, 40),
+      if (!sub || !sub.endpoint || !sub.keys || !sub.keys.p256dh || !sub.keys.auth) return json({ error: 'bad subscription' }, 400);
+      let role = sub.role, userId = sub.userId;
+      /* The phone replaced its subscription by itself (service worker): carry the
+         person over from the old record, then forget the old one. */
+      if (sub.oldEndpoint && sub.oldEndpoint !== sub.endpoint) {
+        const oldK = await subKey(sub.oldEndpoint);
+        const old = await env.PUSH_SUBS.get(oldK, 'json').catch(() => null);
+        if (old) { role = role || old.role; userId = userId || old.userId; }
+        await env.PUSH_SUBS.delete(oldK);
+      }
+      const rec = {
+        endpoint: sub.endpoint,
+        keys: { p256dh: sub.keys.p256dh, auth: sub.keys.auth },
+        role: String(role || 'student').slice(0, 12),
+        userId: String(userId || '').slice(0, 40),
         at: Date.now()
-      }));
+      };
+      await env.PUSH_SUBS.put(await subKey(sub.endpoint), JSON.stringify(rec), { metadata: rec });
       return json({ ok: true });
     }
 
     if (url.pathname === '/api/unsubscribe' && request.method === 'POST') {
       const { endpoint } = await request.json().catch(() => ({}));
       if (!endpoint) return json({ error: 'no endpoint' }, 400);
-      const id = bytesToB64url(new Uint8Array(await crypto.subtle.digest('SHA-256', enc.encode(endpoint)))).slice(0, 32);
-      await env.PUSH_SUBS.delete('sub:' + id);
+      await env.PUSH_SUBS.delete(await subKey(endpoint));
       return json({ ok: true });
     }
 
@@ -141,22 +161,39 @@ export default {
       const payload = JSON.stringify({ title, body: text, url: body.url || '/' });
 
       const role = body.role || null;                    /* 'student' | 'parent' | null = everyone */
-      const only = Array.isArray(body.userIds) ? body.userIds : null;
-      const list = await env.PUSH_SUBS.list({ prefix: 'sub:' });
-      let sent = 0, gone = 0, skipped = 0;
-      for (const k of list.keys) {
-        const raw = await env.PUSH_SUBS.get(k.name);
-        if (!raw) continue;
-        const sub = JSON.parse(raw);
+      const only = Array.isArray(body.userIds) ? body.userIds.map(String) : null;
+      const start = Math.max(0, parseInt(body.offset, 10) || 0);   /* where the previous batch stopped */
+
+      let used = 0;
+      const all = [];
+      let cursor;
+      do {                                               /* 1000 keys per page — one page for a school */
+        const page = await env.PUSH_SUBS.list({ prefix: 'sub:', cursor }); used++;
+        all.push(...page.keys);
+        cursor = page.list_complete ? null : page.cursor;
+      } while (cursor && used < 3);
+
+      let sent = 0, gone = 0, skipped = 0, failed = 0, next = null;
+      for (let i = start; i < all.length; i++) {
+        if (used >= BUDGET) { next = i; break; }        /* the app calls again from here */
+        const k = all[i];
+        let sub = k.metadata;
+        if (!sub || !sub.endpoint) {                     /* saved by the old version: read it once */
+          const raw = await env.PUSH_SUBS.get(k.name); used++;
+          if (!raw) continue;
+          sub = JSON.parse(raw);
+        }
         if (role && sub.role !== role) { skipped++; continue; }
-        if (only && !only.includes(sub.userId)) { skipped++; continue; }
+        if (only && !only.includes(String(sub.userId))) { skipped++; continue; }
+        if (used + 2 > BUDGET) { next = i; break; }
         try {
-          const res = await sendOne(sub, payload, env);
-          if (res.status === 404 || res.status === 410) { await env.PUSH_SUBS.delete(k.name); gone++; }
-          else if (res.ok || res.status === 201) sent++;
-        } catch (e) { /* one bad phone must not stop the rest */ }
+          const res = await sendOne(sub, payload, env); used++;
+          if (res.status === 404 || res.status === 410) { await env.PUSH_SUBS.delete(k.name); used++; gone++; }
+          else if (res.ok) sent++;
+          else failed++;
+        } catch (e) { failed++; }                         /* one bad phone must not stop the rest */
       }
-      return json({ ok: true, sent, removed: gone, skipped, total: list.keys.length });
+      return json({ ok: true, sent, removed: gone, skipped, failed, total: all.length, next });
     }
 
     return env.ASSETS.fetch(request);      /* everything else: the website itself */

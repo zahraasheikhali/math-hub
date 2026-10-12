@@ -2,7 +2,7 @@
    Deliberately NETWORK-FIRST for the app itself: the teacher pushes updates
    often, and a cached copy must never hide a new version. The cache is only a
    fallback for when the phone is offline. */
-const CACHE = 'mathhub-v1';
+const CACHE = 'mathhub-v2';
 const SHELL = ['./', './index.html', './manifest.webmanifest', './icon-192.png', './icon-512.png'];
 
 self.addEventListener('install', e => {
@@ -57,4 +57,25 @@ self.addEventListener('notificationclick', e => {
     for (const c of list) { if ('focus' in c) return c.focus(); }   /* already open — bring it forward */
     if (clients.openWindow) return clients.openWindow(target);
   }));
+});
+
+/* The phone sometimes replaces its notification address on its own (Chrome and
+   Firefox do this every so often). Without this, the server keeps the dead old
+   address and the person silently stops getting anything until they tap the
+   button again. Here we quietly sign the new address up and retire the old one. */
+self.addEventListener('pushsubscriptionchange', e => {
+  const oldEndpoint = e.oldSubscription && e.oldSubscription.endpoint;
+  e.waitUntil((async () => {
+    let sub = e.newSubscription;
+    if (!sub) {
+      const r = await fetch('/api/vapid-public').then(x => x.json()).catch(() => null);
+      if (!r || !r.key) return;
+      const raw = atob(r.key.replace(/-/g, '+').replace(/_/g, '/'));
+      const key = new Uint8Array(raw.length); for (let i = 0; i < raw.length; i++) key[i] = raw.charCodeAt(i);
+      sub = await self.registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key });
+    }
+    const j = sub.toJSON();
+    await fetch('/api/subscribe', { method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ endpoint: j.endpoint, keys: j.keys, oldEndpoint }) });
+  })().catch(() => {}));
 });
