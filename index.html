@@ -2074,6 +2074,11 @@ function PortalApp({user,onLogout,topics,progress,toggleDone,addQuestion,deleteQ
         <AssignForm groupId={id} atype={extra} onDone={close}/>
       </Modal>
     );
+    if(type==='parentReport') return (
+      <Modal title="Send a report to the parent" onClose={close}>
+        <ParentReportForm studentId={id} onDone={close}/>
+      </Modal>
+    );
     if(type==='assignWorksheet') return (
       <Modal title="Assign a worksheet" onClose={close}>
         <AssignWorksheetForm worksheetFile={id} onDone={close}/>
@@ -2462,7 +2467,7 @@ function TrackView({groupId,user,onModal,onDetail,tick}) {
       {studs.length===0&&<div className="empty-state">No students in this group yet.</div>}
       {studs.length>0&&(
         <table className="p-table">
-          <thead><tr><th>Student</th><th>HW done</th><th>Mock done</th><th>Avg score</th><th></th></tr></thead>
+          <thead><tr><th>Student</th><th>HW done</th><th>Mock done</th><th>Avg score</th><th>Parent</th><th></th></tr></thead>
           <tbody>
             {studs.map(s=>{
               const hw=assigns.filter(a=>a.type==='homework');
@@ -2475,6 +2480,8 @@ function TrackView({groupId,user,onModal,onDetail,tick}) {
               return <tr key={s.id}>
                 <td><strong>{s.name}</strong><br/><span style={{fontSize:12,opacity:0.6}}>{s.email}</span></td>
                 <td>{hwS.length}/{hw.length}</td><td>{mkS.length}/{mk.length}</td><td>{avg}</td>
+                <td><button className="a-btn" onClick={()=>onModal({type:'parentReport',id:s.id})}
+                  style={parentPhoneOf(s)?{background:'#25D366',color:'#fff',borderColor:'#1da851',fontWeight:700}:{}}>💬 Report</button></td>
                 <td><button className="a-btn" onClick={()=>onDetail?onDetail(s.id):onModal({type:'studentDetail',id:s.id,extra:groupId})}>📊 Details</button></td>
               </tr>;
             })}
@@ -3713,6 +3720,60 @@ function weekSummaryFor(childId){
 }
 /* "Dear Mr / Mrs Hassan," — using the surname, and never doubling a title that
    is already part of the stored name (e.g. a parent registered as "Mrs Hassan"). */
+/* A parent's number can reach us two ways now: the parent registered and typed
+   it, or the teacher typed it herself on the Registrations page. Her copy lives
+   on the STUDENT record, so it works even when the parent has no account. */
+function parentRecordOf(studentId){ return DB.parents().find(x=>x.childId===studentId)||null; }
+function parentPhoneOf(stu){
+  if(!stu) return '';
+  if(stu.parentPhone&&validPhone(stu.parentPhone)) return normPhone(stu.parentPhone);
+  const p=parentRecordOf(stu.id);
+  return (p&&p.phone&&validPhone(p.phone))?normPhone(p.phone):'';
+}
+function setParentPhone(studentId,raw){
+  const all=DB.students(); const r=all.find(x=>x.id===studentId);
+  if(!r) return false;
+  if(String(raw).trim()===''){ delete r.parentPhone; delete r.parentPhoneRaw; }
+  else{ if(!validPhone(raw)) return false; r.parentPhone=normPhone(raw); r.parentPhoneRaw=String(raw).trim(); }
+  DB.save.students(all); return true;
+}
+function surnameOf(name){
+  const n=String(name||'').trim().replace(/^(mr|mrs|ms|miss|dr|prof|sheikh|sheikha)\.?\s+/i,'');
+  if(!n) return '';
+  const last=n.split(/\s+/).filter(Boolean).pop()||'';
+  return last.replace(/(^|[-'])([a-z])/g,(m,a,b)=>a+b.toUpperCase());
+}
+/* Greeting: the parent's own surname when we know it, otherwise the child's. */
+function salutationFor(parent,child){
+  if(parent&&parent.name) return parentSalutation(parent);
+  const sn=surnameOf(child&&child.name);
+  return sn?('Dear Mr / Mrs '+sn+','):'Dear Mr / Mrs,';
+}
+/* Which class a child is in — used to sort parents class by class. */
+function groupOfStudent(studentId){ return DB.groups().find(g=>(g.students||[]).includes(studentId))||null; }
+/* [{group, parents:[…]}, …] with a final "no class yet" bucket. */
+function parentsByGroup(parents){
+  const groups=DB.groups(); const out=[]; const seen=new Set();
+  groups.forEach(g=>{
+    const ids=new Set(g.students||[]);
+    const list=parents.filter(p=>ids.has(p.childId));
+    list.forEach(p=>seen.add(p.id));
+    if(list.length) out.push({group:g,parents:list});
+  });
+  const rest=parents.filter(p=>!seen.has(p.id));
+  if(rest.length) out.push({group:null,parents:rest});
+  return out;
+}
+/* Everyone the teacher can send a parent message to: registered parents, plus
+   children whose parent never registered but whose number she typed herself. */
+function parentRecipients(){
+  const parents=DB.parents();
+  const covered=new Set(parents.map(x=>x.childId));
+  const extra=DB.students()
+    .filter(st=>!covered.has(st.id)&&st.parentPhone&&validPhone(st.parentPhone))
+    .map(st=>({id:'stu:'+st.id,pseudo:true,name:'Parent of '+st.name,email:'',childId:st.id,phone:st.parentPhone}));
+  return parents.concat(extra);
+}
 function parentSalutation(p){
   let n=String((p&&p.name)||'').trim();
   n=n.replace(/^(mr|mrs|ms|miss|dr|prof|sheikh|sheikha)\.?\s+/i,'');
@@ -3738,7 +3799,7 @@ function buildParentMonthlyMessage(parent,child,teacherName){
   });
   const missing=assigns.filter(a=>!subs.find(x=>x.assignmentId===a.id));
   const L=[];
-  L.push(parentSalutation(parent));
+  L.push(salutationFor(parent,child));
   L.push('');
   L.push('The report for '+monthLabel(mk)+' is now complete for '+name+'.');
   L.push('');
@@ -3755,7 +3816,7 @@ function buildParentMessage(parent,child,teacherName){
   const s=weekSummaryFor(child?child.id:null);
   const name=(child&&child.name)?child.name.split(' ')[0]:'your child';
   const L=[];
-  L.push(parentSalutation(parent));
+  L.push(salutationFor(parent,child));
   L.push('');
   L.push('This week’s update for '+name+' has been added to the Maths Hub.');
   if(s.newWork.length){
@@ -3780,7 +3841,7 @@ function WeeklyReminders(){
   const monthly=mode==='month';
   const sent=(monthly?st.monthlySent:st.weeklySent)||{};
   const wk=monthly?monthKeyNow():weekKey();
-  const parents=DB.parents(); const studs=DB.students();
+  const parents=parentRecipients(); const studs=DB.students();
   const today=new Date();
   const isThursday=today.getDay()===4;
   const isLastThurs=isLastThursdayOfMonth(today);
@@ -3796,9 +3857,12 @@ function WeeklyReminders(){
   function savePhone(pid){
     const v=edit[pid]||'';
     if(!validPhone(v)){ alert('Please enter a valid number with the country code, e.g. +974 5555 1234'); return; }
-    const ps=DB.parents(); const p=ps.find(x=>x.id===pid);
-    if(p){ p.phone=normPhone(v); p.phoneRaw=v.trim(); }
-    DB.save.parents(ps);
+    if(String(pid).indexOf('stu:')===0){ setParentPhone(String(pid).slice(4),v); }
+    else{
+      const ps=DB.parents(); const p=ps.find(x=>x.id===pid);
+      if(p){ p.phone=normPhone(v); p.phoneRaw=v.trim(); }
+      DB.save.parents(ps);
+    }
     setEdit(e=>{ const n=Object.assign({},e); delete n[pid]; return n; });
     setTick(t=>t+1);
   }
@@ -3824,23 +3888,31 @@ function WeeklyReminders(){
         <div style={{fontSize:13,fontWeight:700,marginTop:8}}>Sent {monthly?'this month':'this week'}: {done} of {parents.length}</div>
       </div>
 
-      {parents.length===0&&<div className="empty-state">No parents have registered yet.</div>}
+      {parents.length===0&&<div className="empty-state">Nobody to message yet. Parents appear here once they register, or as soon as you add a parent number on the Registrations page.</div>}
 
-      {parents.map(p=>{
+      {parentsByGroup(parents).map(sec=>(
+        <div key={sec.group?sec.group.id:'none'} style={{marginBottom:10}}>
+          <div style={{fontFamily:'Georgia,serif',fontWeight:700,fontSize:15,color:'var(--green-deep)',borderBottom:'2px solid var(--ink)',paddingBottom:4,margin:'14px 0 10px'}}>
+            {sec.group?('👥 '+sec.group.name):'👤 Not in a class yet'} <span style={{fontSize:12,opacity:0.6,fontWeight:600}}>· {sec.parents.length} parent{sec.parents.length!==1?'s':''}</span>
+          </div>
+          {sec.parents.map(p=>{
         const child=studs.find(x=>x.id===p.childId);
-        const msg=(monthly?buildParentMonthlyMessage(p,child,'Ms. Zahra'):buildParentMessage(p,child,'Ms. Zahra'))+(link?('\n\n'+link):'');
+        const pr=p.pseudo?null:p;        /* no account — greet by the child's surname */
+        const msg=(monthly?buildParentMonthlyMessage(pr,child,'Ms. Zahra'):buildParentMessage(pr,child,'Ms. Zahra'))+(link?('\n\n'+link):'');
         const isSent=sent[p.id]===wk;
-        const hasPhone=!!(p.phone&&validPhone(p.phone));
+        /* the number the teacher typed on Registrations counts too */
+        const phone=(p.phone&&validPhone(p.phone))?normPhone(p.phone):parentPhoneOf(child);
+        const hasPhone=!!phone;
         return (
           <div key={p.id} className="sub-card" style={{opacity:isSent?0.6:1}}>
             <div style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap',marginBottom:8}}>
               <div style={{flex:1,minWidth:160}}>
-                <div style={{fontWeight:700}}>{p.name} {isSent&&<span className="pill pill-green" style={{fontSize:10}}>✓ sent</span>}</div>
-                <div style={{fontSize:12,opacity:0.65}}>{child?('Parent of '+child.name):p.email}{hasPhone?(' · '+prettyPhone(p.phone)):''}</div>
+                <div style={{fontWeight:700}}>{p.name} {p.pseudo&&<span className="pill pill-gray" style={{fontSize:10}}>no account</span>} {isSent&&<span className="pill pill-green" style={{fontSize:10}}>✓ sent</span>}</div>
+                <div style={{fontSize:12,opacity:0.65}}>{p.pseudo?'Number you added':(child?('Parent of '+child.name):p.email)}{hasPhone?(' · '+prettyPhone(phone)):''}</div>
               </div>
               {hasPhone?(
                 <>
-                  <a className="a-btn" href={waLink(p.phone,msg)} target="_blank" rel="noreferrer"
+                  <a className="a-btn" href={waLink(phone,msg)} target="_blank" rel="noreferrer"
                      onClick={()=>markSent(p.id)}
                      style={{textDecoration:'none',background:'#25D366',color:'#fff',borderColor:'#1da851',fontWeight:700}}>
                     {isSent?'↻ Send again':'💬 Send on WhatsApp'}
@@ -3863,7 +3935,9 @@ function WeeklyReminders(){
             </details>
           </div>
         );
-      })}
+          })}
+        </div>
+      ))}
 
       <div style={{marginTop:14,padding:'10px 14px',background:'#F7F4EC',border:'1px solid #ddd',borderRadius:10,fontSize:12}}>
         <div style={{fontWeight:700,marginBottom:4}}>Website link added to every message</div>
@@ -3873,6 +3947,114 @@ function WeeklyReminders(){
         <div style={{opacity:0.7,marginTop:4}}>Saved automatically. Leave empty if you would rather not include a link.</div>
       </div>
     </div>
+  );
+}
+
+/* ═══════════ PARENT NUMBER (typed by the teacher) ═══════════
+   Shown on every student row in Registrations. Many parents never register,
+   so the teacher keeps their WhatsApp number here herself. */
+function ParentPhoneBox({student}){
+  const saved=student.parentPhone&&validPhone(student.parentPhone);
+  const fromAccount=!saved&&parentPhoneOf(student);
+  const [editing,setEditing]=useState(false);
+  const [val,setVal]=useState(student.parentPhoneRaw||'');
+  const [err,setErr]=useState('');
+  function save(){
+    if(String(val).trim()!==''&&!validPhone(val)){ setErr('Add the country code, e.g. +974 5555 1234'); return; }
+    setParentPhone(student.id,val); setErr(''); setEditing(false);
+  }
+  if(editing) return (
+    <div style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap',marginTop:4}}>
+      <input autoFocus value={val} onChange={e=>setVal(e.target.value)} onKeyDown={e=>{if(e.key==='Enter')save();}}
+        placeholder="+974 5555 1234"
+        style={{padding:'5px 9px',border:'2px solid var(--ink)',borderRadius:7,fontSize:12,fontFamily:'inherit',width:160}}/>
+      <button className="a-btn" style={{fontSize:11,padding:'4px 9px'}} onClick={save}>Save</button>
+      <button className="a-btn" style={{fontSize:11,padding:'4px 9px'}} onClick={()=>{setEditing(false);setErr('');setVal(student.parentPhoneRaw||'');}}>Cancel</button>
+      {err&&<span style={{fontSize:11,color:'#a11'}}>{err}</span>}
+    </div>
+  );
+  return (
+    <div style={{fontSize:12,marginTop:3,display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+      {saved
+        ? <span style={{color:'var(--green-deep)',fontWeight:700}}>📱 Parent: {prettyPhone(student.parentPhone)}</span>
+        : fromAccount
+        ? <span style={{opacity:0.7}}>📱 Parent: {prettyPhone(fromAccount)} <span style={{opacity:0.6}}>(from the parent’s own account)</span></span>
+        : <span style={{color:'#b45309',fontWeight:700}}>📱 No parent number yet</span>}
+      <button className="a-btn" style={{fontSize:11,padding:'3px 8px'}} onClick={()=>setEditing(true)}>{saved?'✏️ Change':'＋ Add number'}</button>
+    </div>
+  );
+}
+
+/* ═══════════ PARENT REPORT (Track → 💬 Report) ═══════════
+   Three ready-written messages for one child. Press the green button and
+   WhatsApp opens with the message already typed — she just presses send. */
+function ParentReportForm({studentId,onDone}){
+  const stu=DB.students().find(x=>x.id===studentId);
+  const parent=stu?parentRecordOf(stu.id):null;
+  const [,bump]=useState(0);
+  const [phoneEdit,setPhoneEdit]=useState('');
+  const [custom,setCustom]=useState('');
+  const st=appSettings();
+  const link=(st.siteLink||'').trim();
+  if(!stu) return <div className="empty-state">This student no longer exists.</div>;
+  const phone=parentPhoneOf(stu);
+  const tail=link?('\n\n'+link):'';
+  const weekly=buildParentMessage(parent,stu,'Ms. Zahra')+tail;
+  const monthly=buildParentMonthlyMessage(parent,stu,'Ms. Zahra')+tail;
+  const customFull=salutationFor(parent,stu)+'\n\n'+(custom.trim()||'…')+'\n\n'+'Ms. Zahra'+tail;
+  const msgs=[
+    {k:'w',icon:'📅',label:'Weekly report',hint:'This week’s new work, average score and anything not handed in.',text:weekly},
+    {k:'m',icon:'🗓',label:'Monthly report',hint:'How the whole month went, with a nudge to open the full report.',text:monthly},
+    {k:'c',icon:'✏️',label:'Other message',hint:'Write your own — the greeting and your name are added for you.',text:customFull,custom:true},
+  ];
+  function savePhone(){
+    if(!validPhone(phoneEdit)){ alert('Please add the country code, e.g. +974 5555 1234'); return; }
+    setParentPhone(stu.id,phoneEdit); setPhoneEdit(''); bump(x=>x+1);
+  }
+  return (
+    <>
+      <div style={{background:'#DCEFE3',border:'2px solid #22c55e',borderRadius:10,padding:'10px 14px',marginBottom:12}}>
+        <div style={{fontWeight:700,fontSize:14,color:'#1F6B43'}}>{stu.name}</div>
+        <div style={{fontSize:12,opacity:0.8}}>
+          {parent?('Parent: '+parent.name):'The parent has no account — the message goes to the number below.'}
+          {phone?(' · '+prettyPhone(phone)):''}
+        </div>
+      </div>
+      {!phone&&(
+        <div style={{background:'#FFF4E5',border:'2px solid #E8623D',borderRadius:10,padding:'10px 14px',marginBottom:12}}>
+          <div style={{fontSize:13,fontWeight:700,marginBottom:6}}>No parent number yet — add it once and it is kept.</div>
+          <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+            <input value={phoneEdit} onChange={e=>setPhoneEdit(e.target.value)} placeholder="+974 5555 1234"
+              style={{padding:'6px 10px',border:'2px solid var(--ink)',borderRadius:7,fontSize:13,fontFamily:'inherit',flex:1,minWidth:150}}/>
+            <button className="a-btn" onClick={savePhone}>Save number</button>
+          </div>
+        </div>
+      )}
+      {msgs.map(m=>(
+        <div key={m.k} style={{border:'2px solid var(--ink)',borderRadius:11,padding:'12px 14px',marginBottom:12,background:'white'}}>
+          <div style={{fontWeight:700,fontSize:14,marginBottom:2}}>{m.icon} {m.label}</div>
+          <div style={{fontSize:12,opacity:0.7,marginBottom:8}}>{m.hint}</div>
+          {m.custom&&(
+            <textarea value={custom} onChange={e=>setCustom(e.target.value)} placeholder="Type what you want to tell the parent…"
+              style={{width:'100%',minHeight:70,padding:'8px 10px',border:'2px solid var(--ink)',borderRadius:8,fontSize:13,fontFamily:'inherit',marginBottom:8}}/>
+          )}
+          <details style={{marginBottom:8}}>
+            <summary style={{fontSize:12,cursor:'pointer',opacity:0.8}}>Read the message</summary>
+            <div style={{whiteSpace:'pre-wrap',fontSize:12.5,background:'var(--paper)',border:'1px solid #ddd',borderRadius:8,padding:'9px 11px',marginTop:6}}>{m.text}</div>
+          </details>
+          <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+            {phone
+              ? <a className="a-btn" href={waLink(phone,m.text)} target="_blank" rel="noreferrer"
+                   style={{textDecoration:'none',background:'#25D366',color:'#fff',borderColor:'#1da851',fontWeight:700,
+                           opacity:(m.custom&&!custom.trim())?0.5:1,pointerEvents:(m.custom&&!custom.trim())?'none':'auto'}}>💬 Send on WhatsApp</a>
+              : <span style={{fontSize:12,color:'#b45309',fontWeight:700}}>Add the parent’s number first</span>}
+            <button className="a-btn" style={{fontSize:12}} disabled={m.custom&&!custom.trim()}
+              onClick={()=>{ try{ navigator.clipboard.writeText(m.text); alert('Message copied.'); }catch(e){ alert('Could not copy on this device.'); } }}>📋 Copy</button>
+          </div>
+        </div>
+      ))}
+      <button className="mbtn" onClick={onDone}>Close</button>
+    </>
   );
 }
 
@@ -3911,11 +4093,19 @@ function TeacherParentsView(){
                     <div><div style={{fontSize:13,fontWeight:700}}>All parents of {g.name}</div><div style={{fontSize:10,opacity:0.6}}>{n} parent{n!==1?'s':''}</div></div>
                   </div>); })}
                 <div style={{padding:'8px 12px',fontSize:10,fontWeight:700,textTransform:'uppercase',letterSpacing:'0.5px',opacity:0.5,borderTop:'2px solid var(--ink)',marginTop:4}}>Individual parents</div>
-                {parents.map(p=>{ const child=studs.find(s=>s.id===p.childId); return (
-                  <div key={p.id} onClick={()=>setSel(p.id)} style={{padding:'10px 12px',cursor:'pointer',background:(sel===p.id)?'var(--paper)':'',borderBottom:'1px solid #eee'}}>
-                    <div style={{fontSize:13,fontWeight:700}}>{p.name}</div>
-                    <div style={{fontSize:11,opacity:0.6}}>{child?('Parent of '+child.name):p.email}</div>
-                  </div>); })}
+                {/* grouped by the child's class, so she always knows who she is writing to */}
+                {parentsByGroup(parents).map(sec=>(
+                  <div key={sec.group?sec.group.id:'none'}>
+                    <div style={{padding:'6px 12px',fontSize:11,fontWeight:700,background:'var(--paper)',borderTop:'1px solid #ddd',borderBottom:'1px solid #ddd',color:'var(--green-deep)'}}>
+                      {sec.group?('👥 '+sec.group.name):'👤 Not in a class yet'} <span style={{opacity:0.6,fontWeight:600}}>({sec.parents.length})</span>
+                    </div>
+                    {sec.parents.map(p=>{ const child=studs.find(s=>s.id===p.childId); return (
+                      <div key={p.id} onClick={()=>setSel(p.id)} style={{padding:'10px 12px',cursor:'pointer',background:(sel===p.id)?'var(--paper)':'',borderBottom:'1px solid #eee'}}>
+                        <div style={{fontSize:13,fontWeight:700}}>{p.name}</div>
+                        <div style={{fontSize:11,opacity:0.6}}>{child?('Parent of '+child.name):p.email}</div>
+                      </div>); })}
+                  </div>
+                ))}
               </div>
             </div>
             {sel===PARENT_ALL
@@ -3987,11 +4177,12 @@ function RegistrationsView(){
     alert('Done. '+a.name+'\u2019s password is now:\n\n'+np+'\n\nSend it to them and ask them to change it.');
   }
   const row=(a)=>(
-    <div key={a.kind+a.id} style={{display:'flex',alignItems:'center',gap:10,padding:'10px 0',borderBottom:'1px solid #eee'}}>
+    <div key={a.kind+a.id} className="reg-row" style={{display:'flex',alignItems:'center',gap:10,padding:'10px 0',borderBottom:'1px solid #eee'}}>
       <div style={{width:34,height:34,borderRadius:'50%',background:a.kind==='parent'?'var(--green-deep)':'var(--chalk-blue)',color:'#fff',display:'flex',alignItems:'center',justifyContent:'center',fontSize:12,fontWeight:700,flexShrink:0}}>{initials(a.name)}</div>
       <div style={{flex:1,minWidth:0}}>
         <div style={{fontWeight:700,fontSize:14}}>{a.name} <span className="pill pill-gray" style={{fontSize:10}}>{a.kind}</span></div>
         <div style={{fontSize:12,opacity:0.6}}>{a.email}{a.kind==='parent'?(' · parent of '+childName(a)):''}</div>
+        {a.kind==='student'&&<ParentPhoneBox student={DB.students().find(x=>x.id===a.id)||a}/>}
       </div>
       {a.approved===false&&<button className="a-btn" onClick={()=>accept(a)} style={{background:'var(--green-deep)',color:'#fff',borderColor:'var(--green-deep)',fontSize:12,flexShrink:0}}>✓ Accept</button>}
       {reqs.find(r=>r.email===(a.email||'').toLowerCase())&&<span className="pill pill-amber" style={{fontSize:10}}>🔑 asked for a reset</span>}
