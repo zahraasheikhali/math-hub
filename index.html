@@ -3784,50 +3784,87 @@ function parentSalutation(p){
   last=last.replace(/(^|[-'])([a-z])/g,(m,a,b)=>a+b.toUpperCase());
   return 'Dear Mr / Mrs '+last+',';
 }
-/* The end-of-month nudge: how the month went, and a push to open the report. */
+/* ═══════════ THE TWO PARENT MESSAGES ═══════════
+   Both say the same four things — how much work was set, how much came in, how
+   much was late, and the percentage — then one plain sentence of overall
+   comment. No "open the website" line: she asked for the facts in the message
+   itself, so a parent with no account still gets the whole picture. */
+function statsFor(childId,assigns){
+  const subs=DB.submissions().filter(x=>x.studentId===childId);
+  const nowTs=Date.now();
+  let done=0,late=0,got=0,poss=0; const missing=[],waiting=[];
+  assigns.forEach(a=>{
+    const sub=subs.find(x=>x.assignmentId===a.id);
+    if(sub){
+      done++;
+      if(isLate(a.dueDate,sub.submittedAt)) late++;
+      if(sub.mark!=null&&sub.mark!==undefined){ got+=sub.mark; poss+=(a.totalMark||0); }
+    }else{
+      const due=a.dueDate?new Date(a.dueDate+'T23:59:59').getTime():0;
+      if(due&&due<nowTs) missing.push(a); else waiting.push(a);
+    }
+  });
+  return {set:assigns.length,done,late,missing,waiting,pct:poss?Math.round(got/poss*100):null};
+}
+/* One sentence in plain words, built from the same numbers. */
+function overallComment(name,s){
+  if(!s.set) return 'Overall: no work was set for '+name+' in this period.';
+  const bits=[];
+  if(s.pct===null) bits.push(name+'’s work has not been marked yet');
+  else if(s.pct>=85) bits.push(name+' is doing excellent work');
+  else if(s.pct>=70) bits.push(name+' is doing well');
+  else if(s.pct>=50) bits.push(name+' is doing fairly, and a little more practice at home would help');
+  else bits.push(name+' is finding the work difficult and needs some extra support at home');
+  if(s.missing.length) bits.push(s.missing.length+' piece'+(s.missing.length===1?'':'s')+' of work '+(s.missing.length===1?'is':'are')+' still not handed in');
+  else if(s.done===s.set&&s.set) bits.push('everything has been handed in');
+  if(s.late>=2) bits.push('please help with handing the work in on time');
+  return 'Overall: '+bits.join('; ')+'.';
+}
+function statLines(s){
+  const L=[];
+  L.push('Work set: '+s.set);
+  L.push('Handed in: '+s.done);
+  L.push('Not handed in: '+s.missing.length);
+  if(s.waiting.length) L.push('Not due yet: '+s.waiting.length);   /* so the numbers always add up */
+  L.push('Handed in late: '+s.late);
+  L.push('Average score: '+(s.pct===null?'not marked yet':(s.pct+'%')));
+  return L;
+}
 function buildParentMonthlyMessage(parent,child,teacherName){
   const name=(child&&child.name)?child.name.split(' ')[0]:'your child';
   const mk=monthKeyNow();
   const gids=DB.groups().filter(g=>(g.students||[]).includes(child?child.id:null)).map(g=>g.id);
   const assigns=DB.assignments().filter(a=>gids.includes(a.groupId)&&monthKeyOf(a)===mk);
-  const subs=DB.submissions().filter(x=>x.studentId===(child?child.id:null));
-  let got=0,poss=0,done=0,late=0;
-  assigns.forEach(a=>{
-    const sub=subs.find(x=>x.assignmentId===a.id);
-    if(sub){ done++; if(isLate(a.dueDate,sub.submittedAt)) late++;
-      if(sub.mark!=null&&sub.mark!==undefined){ got+=sub.mark; poss+=(a.totalMark||0); } }
-  });
-  const missing=assigns.filter(a=>!subs.find(x=>x.assignmentId===a.id));
+  const st=statsFor(child?child.id:null,assigns);
   const L=[];
   L.push(salutationFor(parent,child));
   L.push('');
-  L.push('The report for '+monthLabel(mk)+' is now complete for '+name+'.');
+  L.push('Report for '+name+' — '+monthLabel(mk)+'.');
   L.push('');
-  L.push('This month: '+assigns.length+' piece'+(assigns.length===1?'':'s')+' of work set, '+done+' handed in'+(late?(', '+late+' late'):''));
-  if(poss) L.push('Average score: '+Math.round(got/poss*100)+'%');
-  if(missing.length) L.push('Not handed in: '+missing.map(a=>a.title).join(', '));
+  statLines(st).forEach(x=>L.push(x));
+  if(st.missing.length){ L.push(''); L.push('Still to hand in: '+st.missing.map(a=>a.title).join(', ')); }
   L.push('');
-  L.push('Please open the Maths Hub to see the full month report, the marked work and the model answers.');
+  L.push(overallComment(name,st));
   L.push('');
   L.push(teacherName||'Ms. Zahra');
   return L.join('\n');
 }
 function buildParentMessage(parent,child,teacherName){
-  const s=weekSummaryFor(child?child.id:null);
   const name=(child&&child.name)?child.name.split(' ')[0]:'your child';
+  const since=weekStartTs();
+  const gids=DB.groups().filter(g=>(g.students||[]).includes(child?child.id:null)).map(g=>g.id);
+  const assigns=DB.assignments().filter(a=>gids.includes(a.groupId)&&(a.createdAt||0)>=since);
+  const st=statsFor(child?child.id:null,assigns);
   const L=[];
   L.push(salutationFor(parent,child));
   L.push('');
-  L.push('This week’s update for '+name+' has been added to the Maths Hub.');
-  if(s.newWork.length){
-    L.push('');
-    L.push('New this week:');
-    s.newWork.slice(0,6).forEach(a=>L.push('• '+(a.type==='mock'?'Mock: ':'Homework: ')+a.title+(a.dueDate?(' — due '+fmtDue(a.dueDate)):'')));
-  }
-  if(s.pct!==null) L.push('', 'Average score: '+s.pct+'%');
-  if(s.missing.length) L.push('', 'Still not handed in: '+s.missing.map(a=>a.title).join(', '));
+  L.push('This week’s update for '+name+'.');
   L.push('');
-  L.push('Please log in to see the full details and the marked work.');
+  statLines(st).forEach(x=>L.push(x));
+  if(st.waiting.length){ L.push(''); L.push('Still to do: '+st.waiting.map(a=>a.title+(a.dueDate?(' (due '+fmtDue(a.dueDate)+')'):'')).join(', ')); }
+  if(st.missing.length){ L.push(''); L.push('Not handed in: '+st.missing.map(a=>a.title).join(', ')); }
+  L.push('');
+  L.push(overallComment(name,st));
   L.push('');
   L.push(teacherName||'Ms. Zahra');
   return L.join('\n');
@@ -3882,7 +3919,7 @@ function WeeklyReminders(){
         </div>
         <div style={{fontSize:13,opacity:0.8}}>
           {monthly
-            ? 'Sent on the last Thursday of each month: how the whole month went, and a reminder to open the full report.'
+            ? 'Sent on the last Thursday of each month: work set, handed in, not handed in, late, the average score and an overall comment.'
             : 'Each message is written for you with that child’s own homework and marks. Press the button, WhatsApp opens with the message ready, and you press send.'}
         </div>
         <div style={{fontSize:13,fontWeight:700,marginTop:8}}>Sent {monthly?'this month':'this week'}: {done} of {parents.length}</div>
@@ -4003,8 +4040,8 @@ function ParentReportForm({studentId,onDone}){
   const monthly=buildParentMonthlyMessage(parent,stu,'Ms. Zahra')+tail;
   const customFull=salutationFor(parent,stu)+'\n\n'+(custom.trim()||'…')+'\n\n'+'Ms. Zahra'+tail;
   const msgs=[
-    {k:'w',icon:'📅',label:'Weekly report',hint:'This week’s new work, average score and anything not handed in.',text:weekly},
-    {k:'m',icon:'🗓',label:'Monthly report',hint:'How the whole month went, with a nudge to open the full report.',text:monthly},
+    {k:'w',icon:'📅',label:'Weekly report',hint:'This week: work set, handed in, not handed in, late, the average score and an overall comment.',text:weekly},
+    {k:'m',icon:'🗓',label:'Monthly report',hint:'The same for the whole month.',text:monthly},
     {k:'c',icon:'✏️',label:'Other message',hint:'Write your own — the greeting and your name are added for you.',text:customFull,custom:true},
   ];
   function savePhone(){
