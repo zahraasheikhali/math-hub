@@ -3849,6 +3849,34 @@ function buildParentMonthlyMessage(parent,child,teacherName){
   L.push(teacherName||'Ms. Zahra');
   return L.join('\n');
 }
+/* The whole picture: every piece of work the child has ever been set. */
+function buildParentOverallMessage(parent,child,teacherName){
+  const name=(child&&child.name)?child.name.split(' ')[0]:'your child';
+  const gids=DB.groups().filter(g=>(g.students||[]).includes(child?child.id:null)).map(g=>g.id);
+  const assigns=DB.assignments().filter(a=>gids.includes(a.groupId));
+  const st=statsFor(child?child.id:null,assigns);
+  const months=buildMonths(assigns).filter(m=>m.key&&m.key!=='all');
+  const L=[];
+  L.push(salutationFor(parent,child));
+  L.push('');
+  L.push('Overall report for '+name+' \u2014 all work so far.');
+  L.push('');
+  statLines(st).forEach(x=>L.push(x));
+  if(months.length>1){
+    L.push('');
+    L.push('Month by month:');
+    months.slice().reverse().forEach(m=>{
+      const ms=statsFor(child?child.id:null,assigns.filter(a=>monthKeyOf(a)===m.key));
+      L.push('\u2022 '+monthLabel(m.key)+': '+ms.done+' of '+ms.set+' handed in'+(ms.pct===null?'':(', '+ms.pct+'%')));
+    });
+  }
+  if(st.missing.length){ L.push(''); L.push('Still to hand in: '+st.missing.map(a=>a.title).join(', ')); }
+  L.push('');
+  L.push(overallComment(name,st));
+  L.push('');
+  L.push(teacherName||'Ms. Zahra');
+  return L.join('\n');
+}
 function buildParentMessage(parent,child,teacherName){
   const name=(child&&child.name)?child.name.split(' ')[0]:'your child';
   const since=weekStartTs();
@@ -3876,8 +3904,9 @@ function WeeklyReminders(){
   const [mode,setMode]=useState(()=>isLastThursdayOfMonth()?'month':'week');
   const st=appSettings();
   const monthly=mode==='month';
-  const sent=(monthly?st.monthlySent:st.weeklySent)||{};
-  const wk=monthly?monthKeyNow():weekKey();
+  const overallMode=mode==='all';
+  const sent=(overallMode?st.overallSent:monthly?st.monthlySent:st.weeklySent)||{};
+  const wk=(overallMode||monthly)?monthKeyNow():weekKey();
   const parents=parentRecipients(); const studs=DB.students();
   const today=new Date();
   const isThursday=today.getDay()===4;
@@ -3886,9 +3915,9 @@ function WeeklyReminders(){
 
   function markSent(pid){
     const s0=appSettings();
-    const cur=(monthly?s0.monthlySent:s0.weeklySent)||{};
+    const cur=(overallMode?s0.overallSent:monthly?s0.monthlySent:s0.weeklySent)||{};
     const next=Object.assign({},cur,{[pid]:wk});
-    saveSetting(monthly?{monthlySent:next}:{weeklySent:next});
+    saveSetting(overallMode?{overallSent:next}:monthly?{monthlySent:next}:{weeklySent:next});
     setTick(t=>t+1);
   }
   function savePhone(pid){
@@ -3910,19 +3939,24 @@ function WeeklyReminders(){
       <div style={{display:'flex',gap:8,marginBottom:12,flexWrap:'wrap'}}>
         <button className="a-btn" onClick={()=>setMode('week')} style={{background:mode==='week'?'var(--green-deep)':'',color:mode==='week'?'#fff':'',borderColor:mode==='week'?'var(--green-deep)':''}}>📅 Weekly update</button>
         <button className="a-btn" onClick={()=>setMode('month')} style={{background:monthly?'var(--green-deep)':'',color:monthly?'#fff':'',borderColor:monthly?'var(--green-deep)':''}}>🗓 Monthly report{isLastThurs?' ← due today':''}</button>
+        <button className="a-btn" onClick={()=>setMode('all')} style={{background:overallMode?'var(--green-deep)':'',color:overallMode?'#fff':'',borderColor:overallMode?'var(--green-deep)':''}}>📊 Overall report</button>
       </div>
-      <div style={{background:(monthly?isLastThurs:isThursday)?'#DCEFE3':'#FFF4E5',border:'2px solid '+((monthly?isLastThurs:isThursday)?'#22c55e':'#E8623D'),borderRadius:12,padding:'12px 16px',marginBottom:14}}>
+      <div style={{background:(overallMode?false:monthly?isLastThurs:isThursday)?'#DCEFE3':'#FFF4E5',border:'2px solid '+((overallMode?false:monthly?isLastThurs:isThursday)?'#22c55e':'#E8623D'),borderRadius:12,padding:'12px 16px',marginBottom:14}}>
         <div style={{fontWeight:700,fontSize:15,marginBottom:4}}>
-          {monthly
+          {overallMode
+            ? '📊 Overall report — everything so far'
+            : monthly
             ? (isLastThurs?('🗓 Last Thursday of '+monthLabel(monthKeyNow())+' — time for the monthly report'):('🗓 Monthly report — '+monthLabel(monthKeyNow())))
             : (isThursday?'📅 It’s Thursday — time for this week’s parent update':'📅 Weekly parent update')}
         </div>
         <div style={{fontSize:13,opacity:0.8}}>
-          {monthly
+          {overallMode
+            ? 'The whole year so far, month by month, with the overall average. Good for a term end or a parents’ meeting.'
+            : monthly
             ? 'Sent on the last Thursday of each month: work set, handed in, not handed in, late, the average score and an overall comment.'
             : 'Each message is written for you with that child’s own homework and marks. Press the button, WhatsApp opens with the message ready, and you press send.'}
         </div>
-        <div style={{fontSize:13,fontWeight:700,marginTop:8}}>Sent {monthly?'this month':'this week'}: {done} of {parents.length}</div>
+        <div style={{fontSize:13,fontWeight:700,marginTop:8}}>Sent {(monthly||overallMode)?'this month':'this week'}: {done} of {parents.length}</div>
       </div>
 
       {parents.length===0&&<div className="empty-state">Nobody to message yet. Parents appear here once they register, or as soon as you add a parent number on the Registrations page.</div>}
@@ -3935,7 +3969,8 @@ function WeeklyReminders(){
           {sec.parents.map(p=>{
         const child=studs.find(x=>x.id===p.childId);
         const pr=p.pseudo?null:p;        /* no account — greet by the child's surname */
-        const msg=(monthly?buildParentMonthlyMessage(pr,child,'Ms. Zahra'):buildParentMessage(pr,child,'Ms. Zahra'))+(link?('\n\n'+link):'');
+        const build=overallMode?buildParentOverallMessage:monthly?buildParentMonthlyMessage:buildParentMessage;
+        const msg=build(pr,child,'Ms. Zahra')+(link?('\n\n'+link):'');
         const isSent=sent[p.id]===wk;
         /* the number the teacher typed on Registrations counts too */
         const phone=(p.phone&&validPhone(p.phone))?normPhone(p.phone):parentPhoneOf(child);
@@ -4038,10 +4073,12 @@ function ParentReportForm({studentId,onDone}){
   const tail=link?('\n\n'+link):'';
   const weekly=buildParentMessage(parent,stu,'Ms. Zahra')+tail;
   const monthly=buildParentMonthlyMessage(parent,stu,'Ms. Zahra')+tail;
+  const overall=buildParentOverallMessage(parent,stu,'Ms. Zahra')+tail;
   const customFull=salutationFor(parent,stu)+'\n\n'+(custom.trim()||'…')+'\n\n'+'Ms. Zahra'+tail;
   const msgs=[
     {k:'w',icon:'📅',label:'Weekly report',hint:'This week: work set, handed in, not handed in, late, the average score and an overall comment.',text:weekly},
     {k:'m',icon:'🗓',label:'Monthly report',hint:'The same for the whole month.',text:monthly},
+    {k:'o',icon:'📊',label:'Overall report',hint:'Everything so far, with a month-by-month line and the overall average.',text:overall},
     {k:'c',icon:'✏️',label:'Other message',hint:'Write your own — the greeting and your name are added for you.',text:customFull,custom:true},
   ];
   function savePhone(){
