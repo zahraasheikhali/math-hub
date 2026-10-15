@@ -3949,7 +3949,6 @@ function WeeklyReminders(){
   const today=new Date();
   const isThursday=today.getDay()===4;
   const isLastThurs=isLastThursdayOfMonth(today);
-  const link=(st.siteLink||'').trim();
 
   function markSent(pid){
     const s0=appSettings();
@@ -4008,7 +4007,7 @@ function WeeklyReminders(){
         const child=studs.find(x=>x.id===p.childId);
         const pr=p.pseudo?null:p;        /* no account — greet by the child's surname */
         const build=overallMode?buildParentOverallMessage:monthly?buildParentMonthlyMessage:buildParentMessage;
-        const msg=build(pr,child,'Ms. Zahra')+(link?('\n\n'+link):'');
+        const msg=build(pr,child,'Ms. Zahra');
         const isSent=sent[p.id]===wk;
         /* the number the teacher typed on Registrations counts too */
         const phone=(p.phone&&validPhone(p.phone))?normPhone(p.phone):parentPhoneOf(child);
@@ -4049,13 +4048,6 @@ function WeeklyReminders(){
         </div>
       ))}
 
-      <div style={{marginTop:14,padding:'10px 14px',background:'#F7F4EC',border:'1px solid #ddd',borderRadius:10,fontSize:12}}>
-        <div style={{fontWeight:700,marginBottom:4}}>Website link added to every message</div>
-        <input defaultValue={link} placeholder="Paste your site address, e.g. https://math-hub....workers.dev"
-          onBlur={e=>{ saveSetting({siteLink:e.target.value.trim()}); setTick(t=>t+1); }}
-          style={{width:'100%',padding:'6px 10px',border:'2px solid var(--ink)',borderRadius:7,fontSize:12,fontFamily:'inherit'}}/>
-        <div style={{opacity:0.7,marginTop:4}}>Saved automatically. Leave empty if you would rather not include a link.</div>
-      </div>
     </div>
   );
 }
@@ -4104,15 +4096,12 @@ function ParentReportForm({studentId,onDone}){
   const [,bump]=useState(0);
   const [phoneEdit,setPhoneEdit]=useState('');
   const [custom,setCustom]=useState('');
-  const st=appSettings();
-  const link=(st.siteLink||'').trim();
   if(!stu) return <div className="empty-state">This student no longer exists.</div>;
   const phone=parentPhoneOf(stu);
-  const tail=link?('\n\n'+link):'';
-  const weekly=buildParentMessage(parent,stu,'Ms. Zahra')+tail;
-  const monthly=buildParentMonthlyMessage(parent,stu,'Ms. Zahra')+tail;
-  const overall=buildParentOverallMessage(parent,stu,'Ms. Zahra')+tail;
-  const customFull=salutationFor(parent,stu)+'\n\n'+(custom.trim()||'…')+'\n\n'+'Ms. Zahra'+tail;
+  const weekly=buildParentMessage(parent,stu,'Ms. Zahra');
+  const monthly=buildParentMonthlyMessage(parent,stu,'Ms. Zahra');
+  const overall=buildParentOverallMessage(parent,stu,'Ms. Zahra');
+  const customFull=salutationFor(parent,stu)+'\n\n'+(custom.trim()||'…')+'\n\n'+'Ms. Zahra';
   const msgs=[
     {k:'w',icon:'📅',label:'Weekly report',hint:'This week: work set, handed in, not handed in, late, the average score and an overall comment.',text:weekly},
     {k:'m',icon:'🗓',label:'Monthly report',hint:'The same for the whole month.',text:monthly},
