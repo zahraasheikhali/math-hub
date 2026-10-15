@@ -2458,7 +2458,10 @@ function TrackView({groupId,user,onModal,onDetail,tick}) {
   if(isT) return (
     <div>
       <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:10,flexWrap:'wrap',marginBottom:16}}>
-        <div style={{fontFamily:'Georgia,serif',fontWeight:700,fontSize:17,color:'var(--green-deep)'}}>Student progress</div>
+        <div>
+          <div style={{fontFamily:'Georgia,serif',fontWeight:700,fontSize:17,color:'var(--green-deep)'}}>Student progress</div>
+          <div style={{fontSize:12,opacity:0.7,marginTop:2}}>Average score counts work that was never handed in as 0. Work still inside its due date is not counted at all.</div>
+        </div>
         {studs.length>0&&<ExcelBtn
           label="⬇ Download class results (Excel)"
           build={()=>classSheets(group?group.name:'Class',studs,assigns,subs.filter(x=>assigns.find(a=>a.id===x.assignmentId)))}
@@ -2476,10 +2479,12 @@ function TrackView({groupId,user,onModal,onDetail,tick}) {
               const mkS=subs.filter(sub=>sub.studentId===s.id&&mk.find(a=>a.id===sub.assignmentId));
               const allS=subs.filter(sub=>sub.studentId===s.id&&assigns.find(a=>a.id===sub.assignmentId));
               const marked=allS.filter(sub=>sub.mark!==null&&sub.mark!==undefined);
-              let avg='—'; if(marked.length){const pcts=marked.map(sub=>{const a=assigns.find(x=>x.id===sub.assignmentId);return a?sub.mark/a.totalMark*100:0;});avg=Math.round(pcts.reduce((a,b)=>a+b,0)/pcts.length)+'%';}
+              const av=averagePct(s.id,assigns);               /* missed work counts as 0 */
+              const avg=av.pct===null?'—':(av.pct+'%');
               return <tr key={s.id}>
                 <td><strong>{s.name}</strong><br/><span style={{fontSize:12,opacity:0.6}}>{s.email}</span></td>
-                <td>{hwS.length}/{hw.length}</td><td>{mkS.length}/{mk.length}</td><td>{avg}</td>
+                <td>{hwS.length}/{hw.length}</td><td>{mkS.length}/{mk.length}</td>
+                <td>{avg}{av.zeros>0&&<div style={{fontSize:10,opacity:0.6,whiteSpace:'nowrap'}}>{av.zeros} not done counted as 0</div>}</td>
                 <td><button className="a-btn" onClick={()=>onModal({type:'parentReport',id:s.id})}
                   style={parentPhoneOf(s)?{background:'#25D366',color:'#fff',borderColor:'#1da851',fontWeight:700}:{}}>💬 Report</button></td>
                 <td><button className="a-btn" onClick={()=>onDetail?onDetail(s.id):onModal({type:'studentDetail',id:s.id,extra:groupId})}>📊 Details</button></td>
@@ -2497,7 +2502,8 @@ function TrackView({groupId,user,onModal,onDetail,tick}) {
     .slice().sort((x,y)=>(y.dueDate||'').localeCompare(x.dueDate||''));
   const mySubs=subs.filter(s=>s.studentId===user.id&&assigns.find(a=>a.id===s.assignmentId));
   const marked=mySubs.filter(s=>s.mark!==null&&s.mark!==undefined);
-  const avg=marked.length?Math.round(marked.map(s=>{const a=assigns.find(x=>x.id===s.assignmentId);return a?s.mark/a.totalMark*100:0;}).reduce((a,b)=>a+b,0)/marked.length):null;
+  const avgInfo=averagePct(user.id,assigns);      /* work not handed in counts as 0 */
+  const avg=avgInfo.pct;
   return (
     <div>
       <div style={{fontFamily:'Georgia,serif',fontWeight:700,fontSize:17,color:'var(--green-deep)',marginBottom:16}}>My progress</div>
@@ -3135,7 +3141,8 @@ function StudentDetail({studentId,groupId,fullPage}) {
   const marked=mySubs.filter(s=>s.mark!==null&&s.mark!==undefined);
   const totPoss=marked.reduce((sum,sub)=>{const a=assigns.find(x=>x.id===sub.assignmentId);return sum+(a?a.totalMark:0);},0);
   const totGot=marked.reduce((sum,sub)=>sum+sub.mark,0);
-  const pct=totPoss>0?Math.round(totGot/totPoss*100):0;
+  const avInfo=averagePct(studentId,assigns);   /* missed work counts as 0 */
+  const pct=avInfo.pct===null?0:avInfo.pct;
   const done=mySubs.length,total=assigns.length,notDone=total-done;
   function buildPie(done,notDone){ const total=done+notDone; if(total===0)return`<circle cx="80" cy="80" r="60" fill="#D3D1C7"/>`; if(notDone===0)return`<circle cx="80" cy="80" r="60" fill="#16261F"/>`; if(done===0)return`<circle cx="80" cy="80" r="60" fill="#D3D1C7"/>`; const pct=done/total,angle=pct*2*Math.PI,x=80+60*Math.sin(angle),y=80-60*Math.cos(angle),large=pct>.5?1:0; return`<circle cx="80" cy="80" r="60" fill="#D3D1C7"/><path d="M80,80 L80,20 A60,60 0 ${large},1 ${x},${y} Z" fill="#16261F"/><circle cx="80" cy="80" r="36" fill="#F7F4EC"/><text x="80" y="85" text-anchor="middle" font-size="16" font-weight="700" fill="#16261F">${Math.round(pct*100)}%</text>`; }
   return (
@@ -3150,7 +3157,7 @@ function StudentDetail({studentId,groupId,fullPage}) {
       <div className="p-stat-row" style={{marginBottom:16}}>
         <div className="p-stat"><div className="n">{done}/{total}</div><div className="l">Submitted</div></div>
         <div className="p-stat"><div className="n">{totGot}/{totPoss||'—'}</div><div className="l">Marks</div></div>
-        <div className="p-stat"><div className="n">{marked.length>0?pct+'%':'—'}</div><div className="l">Score</div></div>
+        <div className="p-stat"><div className="n">{avInfo.pct===null?'—':pct+'%'}</div><div className="l">Score{avInfo.zeros>0?' (misses = 0)':''}</div></div>
       </div>
       {total>0&&<><svg viewBox="0 0 160 160" width="120" height="120" style={{display:'block',margin:'0 auto'}} dangerouslySetInnerHTML={{__html:buildPie(done,notDone)}}/>
       <div style={{display:'flex',gap:16,justifyContent:'center',margin:'8px 0 16px',fontSize:12}}>
@@ -3718,8 +3725,6 @@ function weekSummaryFor(childId){
   marked.forEach(x=>{ const a=assigns.find(y=>y.id===x.assignmentId); if(a){ got+=x.mark; poss+=(a.totalMark||0); } });
   return {newWork,marked,missing,pct:poss?Math.round(got/poss*100):null};
 }
-/* "Dear Mr / Mrs Hassan," — using the surname, and never doubling a title that
-   is already part of the stored name (e.g. a parent registered as "Mrs Hassan"). */
 /* A parent's number can reach us two ways now: the parent registered and typed
    it, or the teacher typed it herself on the Registrations page. Her copy lives
    on the STUDENT record, so it works even when the parent has no account. */
@@ -3744,11 +3749,7 @@ function surnameOf(name){
   return last.replace(/(^|[-'])([a-z])/g,(m,a,b)=>a+b.toUpperCase());
 }
 /* Greeting: the parent's own surname when we know it, otherwise the child's. */
-function salutationFor(parent,child){
-  if(parent&&parent.name) return parentSalutation(parent);
-  const sn=surnameOf(child&&child.name);
-  return sn?('Dear Mr / Mrs '+sn+','):'Dear Mr / Mrs,';
-}
+function salutationFor(parent,child){ return 'Dear Parent,'; }
 /* Which class a child is in — used to sort parents class by class. */
 function groupOfStudent(studentId){ return DB.groups().find(g=>(g.students||[]).includes(studentId))||null; }
 /* [{group, parents:[…]}, …] with a final "no class yet" bucket. */
@@ -3774,48 +3775,64 @@ function parentRecipients(){
     .map(st=>({id:'stu:'+st.id,pseudo:true,name:'Parent of '+st.name,email:'',childId:st.id,phone:st.parentPhone}));
   return parents.concat(extra);
 }
-function parentSalutation(p){
-  let n=String((p&&p.name)||'').trim();
-  n=n.replace(/^(mr|mrs|ms|miss|dr|prof|sheikh|sheikha)\.?\s+/i,'');
-  if(!n) return 'Dear Mr / Mrs,';
-  const parts=n.split(/\s+/).filter(Boolean);
-  let last=parts[parts.length-1];
-  /* tidy a name typed in lower case, keeping Al-Hassan style hyphens */
-  last=last.replace(/(^|[-'])([a-z])/g,(m,a,b)=>a+b.toUpperCase());
-  return 'Dear Mr / Mrs '+last+',';
-}
 /* ═══════════ THE TWO PARENT MESSAGES ═══════════
    Both say the same four things — how much work was set, how much came in, how
    much was late, and the percentage — then one plain sentence of overall
    comment. No "open the website" line: she asked for the facts in the message
    itself, so a parent with no account still gets the whole picture. */
+/* THE average. Work that was never handed in and whose due date has passed
+   counts as a ZERO — two good sheets out of four is 40%, not 80%. Work still
+   within its deadline, and work handed in but not yet marked, are left out
+   altogether so they neither help nor hurt. */
+function averagePct(childId,assigns){
+  const subs=DB.submissions().filter(x=>x.studentId===childId);
+  const nowTs=Date.now();
+  let got=0,poss=0,counted=0,zeros=0,mGot=0,mPoss=0;
+  (assigns||[]).forEach(a=>{
+    const total=a.totalMark||0; if(!total) return;
+    const sub=subs.find(x=>x.assignmentId===a.id);
+    if(sub){
+      if(sub.mark!=null&&sub.mark!==undefined){ got+=sub.mark; poss+=total; counted++; mGot+=sub.mark; mPoss+=total; }
+    }else{
+      const due=a.dueDate?new Date(a.dueDate+'T23:59:59').getTime():0;
+      if(due&&due<nowTs){ poss+=total; counted++; zeros++; }   /* missed = 0 */
+    }
+  });
+  return {pct:poss?Math.round(got/poss*100):null,
+          markedPct:mPoss?Math.round(mGot/mPoss*100):null,   /* only what was handed in */
+          counted,zeros};
+}
 function statsFor(childId,assigns){
   const subs=DB.submissions().filter(x=>x.studentId===childId);
   const nowTs=Date.now();
-  let done=0,late=0,got=0,poss=0; const missing=[],waiting=[];
+  let done=0,late=0; const missing=[],waiting=[];
   assigns.forEach(a=>{
     const sub=subs.find(x=>x.assignmentId===a.id);
     if(sub){
       done++;
       if(isLate(a.dueDate,sub.submittedAt)) late++;
-      if(sub.mark!=null&&sub.mark!==undefined){ got+=sub.mark; poss+=(a.totalMark||0); }
     }else{
       const due=a.dueDate?new Date(a.dueDate+'T23:59:59').getTime():0;
       if(due&&due<nowTs) missing.push(a); else waiting.push(a);
     }
   });
-  return {set:assigns.length,done,late,missing,waiting,pct:poss?Math.round(got/poss*100):null};
+  const av=averagePct(childId,assigns);
+  return {set:assigns.length,done,late,missing,waiting,pct:av.pct,markedPct:av.markedPct,zeros:av.zeros};
 }
 /* One sentence in plain words, built from the same numbers. */
 function overallComment(name,s){
   if(!s.set) return 'Overall: no work was set for '+name+' in this period.';
   const bits=[];
+  /* A low average from missing work is not the same as a child who cannot do the
+     maths — say which one it is, or a parent reads the wrong message. */
+  const dragged=s.zeros>0&&s.markedPct!==null&&s.pct!==null&&(s.markedPct-s.pct)>=15;
   if(s.pct===null) bits.push(name+'’s work has not been marked yet');
+  else if(dragged) bits.push(name+' scores '+s.markedPct+'% on the work that is handed in, but '+s.zeros+' piece'+(s.zeros===1?'':'s')+' of work '+(s.zeros===1?'was':'were')+' never handed in and count'+(s.zeros===1?'s':'')+' as 0, bringing the average down to '+s.pct+'%');
   else if(s.pct>=85) bits.push(name+' is doing excellent work');
   else if(s.pct>=70) bits.push(name+' is doing well');
   else if(s.pct>=50) bits.push(name+' is doing fairly, and a little more practice at home would help');
   else bits.push(name+' is finding the work difficult and needs some extra support at home');
-  if(s.missing.length) bits.push(s.missing.length+' piece'+(s.missing.length===1?'':'s')+' of work '+(s.missing.length===1?'is':'are')+' still not handed in');
+  if(s.missing.length&&!dragged) bits.push(s.missing.length+' piece'+(s.missing.length===1?'':'s')+' of work '+(s.missing.length===1?'is':'are')+' still not handed in');
   else if(s.done===s.set&&s.set) bits.push('everything has been handed in');
   if(s.late>=2) bits.push('please help with handing the work in on time');
   return 'Overall: '+bits.join('; ')+'.';
@@ -3828,6 +3845,7 @@ function statLines(s){
   if(s.waiting.length) L.push('Not due yet: '+s.waiting.length);   /* so the numbers always add up */
   L.push('Handed in late: '+s.late);
   L.push('Average score: '+(s.pct===null?'not marked yet':(s.pct+'%')));
+  if(s.zeros&&s.markedPct!==null&&s.markedPct!==s.pct) L.push('(work not handed in counts as 0 — '+s.markedPct+'% on the work that was handed in)');
   return L;
 }
 function buildParentMonthlyMessage(parent,child,teacherName){
@@ -4304,7 +4322,8 @@ function RegistrationsView(){
     }
   });
   r.hwNotDone=r.hwTotal-r.hwDone; r.mkNotDone=r.mkTotal-r.mkDone;
-  r.pct=r.poss>0?Math.round(r.got/r.poss*100):null;
+  const av=averagePct(childId,assigns);      /* work not handed in counts as 0 */
+  r.pct=av.pct; r.zeros=av.zeros;
   return r;
 }
 function ReportCard({title,r,note}){
@@ -4321,6 +4340,7 @@ function ReportCard({title,r,note}){
         {cell('Late',r.late,r.late>0?'#d97706':undefined)}
         {cell('Average score',r.pct!=null?r.pct+'%':'—')}
       </div>
+      {r.zeros>0&&<div style={{fontSize:11,opacity:0.65,marginTop:4}}>Work not handed in by its due date counts as 0 in the average.</div>}
     </div>
   );
 }
