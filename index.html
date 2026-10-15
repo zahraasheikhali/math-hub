@@ -3871,7 +3871,7 @@ function buildParentMonthlyMessage(parent,child,teacherName){
   const L=[];
   L.push(salutationFor(parent,child));
   L.push('');
-  L.push('Report for '+name+' — '+monthLabel(mk)+'.');
+  L.push('Mathematics report for '+name+' — '+monthLabel(mk)+'.');
   L.push('');
   statLines(st).forEach(x=>L.push(x));
   if(st.missing.length){ L.push(''); L.push('Still to hand in: '+st.missing.map(a=>a.title).join(', ')); }
@@ -3881,6 +3881,7 @@ function buildParentMonthlyMessage(parent,child,teacherName){
   L.push(supportLine(name));
   L.push('');
   L.push(teacherName||'Ms. Zahra');
+  L.push('Mathematics teacher');
   return L.join('\n');
 }
 /* The whole picture: every piece of work the child has ever been set. */
@@ -3893,7 +3894,7 @@ function buildParentOverallMessage(parent,child,teacherName){
   const L=[];
   L.push(salutationFor(parent,child));
   L.push('');
-  L.push('Overall report for '+name+' \u2014 all work so far.');
+  L.push('Mathematics \u2014 overall report for '+name+', all work so far.');
   L.push('');
   statLines(st).forEach(x=>L.push(x));
   if(months.length>1){
@@ -3911,6 +3912,7 @@ function buildParentOverallMessage(parent,child,teacherName){
   L.push(supportLine(name));
   L.push('');
   L.push(teacherName||'Ms. Zahra');
+  L.push('Mathematics teacher');
   return L.join('\n');
 }
 function buildParentMessage(parent,child,teacherName){
@@ -3922,7 +3924,7 @@ function buildParentMessage(parent,child,teacherName){
   const L=[];
   L.push(salutationFor(parent,child));
   L.push('');
-  L.push('This week’s update for '+name+'.');
+  L.push('Mathematics — this week’s update for '+name+'.');
   L.push('');
   statLines(st).forEach(x=>L.push(x));
   if(st.waiting.length){ L.push(''); L.push('Still to do: '+st.waiting.map(a=>a.title+(a.dueDate?(' (due '+fmtDue(a.dueDate)+')'):'')).join(', ')); }
@@ -3933,6 +3935,7 @@ function buildParentMessage(parent,child,teacherName){
   L.push(supportLine(name));
   L.push('');
   L.push(teacherName||'Ms. Zahra');
+  L.push('Mathematics teacher');
   return L.join('\n');
 }
 
@@ -4101,7 +4104,7 @@ function ParentReportForm({studentId,onDone}){
   const weekly=buildParentMessage(parent,stu,'Ms. Zahra');
   const monthly=buildParentMonthlyMessage(parent,stu,'Ms. Zahra');
   const overall=buildParentOverallMessage(parent,stu,'Ms. Zahra');
-  const customFull=salutationFor(parent,stu)+'\n\n'+(custom.trim()||'…')+'\n\n'+'Ms. Zahra';
+  const customFull=salutationFor(parent,stu)+'\n\n'+(custom.trim()||'…')+'\n\nMs. Zahra\nMathematics teacher';
   const msgs=[
     {k:'w',icon:'📅',label:'Weekly report',hint:'This week: work set, handed in, not handed in, late, the average score and an overall comment.',text:weekly},
     {k:'m',icon:'🗓',label:'Monthly report',hint:'The same for the whole month.',text:monthly},
