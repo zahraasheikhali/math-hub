@@ -3787,20 +3787,23 @@ function parentRecipients(){
 function averagePct(childId,assigns){
   const subs=DB.submissions().filter(x=>x.studentId===childId);
   const nowTs=Date.now();
-  let got=0,poss=0,counted=0,zeros=0,mGot=0,mPoss=0;
+  const all=[],markedOnly=[];
+  let zeros=0;
   (assigns||[]).forEach(a=>{
     const total=a.totalMark||0; if(!total) return;
     const sub=subs.find(x=>x.assignmentId===a.id);
     if(sub){
-      if(sub.mark!=null&&sub.mark!==undefined){ got+=sub.mark; poss+=total; counted++; mGot+=sub.mark; mPoss+=total; }
+      if(sub.mark!=null&&sub.mark!==undefined){
+        const pc=Math.max(0,Math.min(100,sub.mark/total*100));
+        all.push(pc); markedOnly.push(pc);
+      }
     }else{
       const due=a.dueDate?new Date(a.dueDate+'T23:59:59').getTime():0;
-      if(due&&due<nowTs){ poss+=total; counted++; zeros++; }   /* missed = 0 */
+      if(due&&due<nowTs){ all.push(0); zeros++; }      /* missed = 0 for that sheet */
     }
   });
-  return {pct:poss?Math.round(got/poss*100):null,
-          markedPct:mPoss?Math.round(mGot/mPoss*100):null,   /* only what was handed in */
-          counted,zeros};
+  const mean=(arr)=>arr.length?Math.round(arr.reduce((t,x)=>t+x,0)/arr.length):null;
+  return {pct:mean(all),markedPct:mean(markedOnly),counted:all.length,zeros};
 }
 function statsFor(childId,assigns){
   const subs=DB.submissions().filter(x=>x.studentId===childId);
@@ -3826,16 +3829,27 @@ function overallComment(name,s){
   /* A low average from missing work is not the same as a child who cannot do the
      maths — say which one it is, or a parent reads the wrong message. */
   const dragged=s.zeros>0&&s.markedPct!==null&&s.pct!==null&&(s.markedPct-s.pct)>=15;
-  if(s.pct===null) bits.push(name+'’s work has not been marked yet');
+  /* nothing handed in at all: the 0% is about handing work in, not about ability */
+  const noneIn=s.pct!==null&&s.markedPct===null&&s.zeros>0;
+  const explained=dragged||noneIn;
+  if(s.pct===null) bits.push('there is nothing to report on yet for '+name);
+  else if(noneIn) bits.push(s.zeros===1
+      ? ('the work set in this period was not handed in, so the average shows 0% — I have not seen '+name+'’s work yet')
+      : ('none of the '+s.zeros+' pieces of work set in this period were handed in, so the average shows 0% — I have not seen '+name+'’s work yet'));
   else if(dragged) bits.push(name+' scores '+s.markedPct+'% on the work that is handed in, but '+s.zeros+' piece'+(s.zeros===1?'':'s')+' of work '+(s.zeros===1?'was':'were')+' never handed in and count'+(s.zeros===1?'s':'')+' as 0, bringing the average down to '+s.pct+'%');
   else if(s.pct>=85) bits.push(name+' is doing excellent work');
   else if(s.pct>=70) bits.push(name+' is doing well');
   else if(s.pct>=50) bits.push(name+' is doing fairly, and a little more practice at home would help');
   else bits.push(name+' is finding the work difficult and needs some extra support at home');
-  if(s.missing.length&&!dragged) bits.push(s.missing.length+' piece'+(s.missing.length===1?'':'s')+' of work '+(s.missing.length===1?'is':'are')+' still not handed in');
+  if(s.missing.length&&!explained) bits.push(s.missing.length+' piece'+(s.missing.length===1?'':'s')+' of work '+(s.missing.length===1?'is':'are')+' still not handed in');
   else if(s.done===s.set&&s.set) bits.push('everything has been handed in');
   if(s.late>=2) bits.push('please help with handing the work in on time');
   return 'Overall: '+bits.join('; ')+'.';
+}
+/* Every report ends with an open door — a parent who reads a low percentage
+   should know exactly what to do next. */
+function supportLine(name){
+  return 'If you would like extra help for '+name+', please contact me at any time \u2014 I am always glad to give extra support.';
 }
 function statLines(s){
   const L=[];
@@ -3844,7 +3858,7 @@ function statLines(s){
   L.push('Not handed in: '+s.missing.length);
   if(s.waiting.length) L.push('Not due yet: '+s.waiting.length);   /* so the numbers always add up */
   L.push('Handed in late: '+s.late);
-  L.push('Average score: '+(s.pct===null?'not marked yet':(s.pct+'%')));
+  L.push('Average score: '+(s.pct===null?'\u2014':(s.pct+'%')));
   if(s.zeros&&s.markedPct!==null&&s.markedPct!==s.pct) L.push('(work not handed in counts as 0 — '+s.markedPct+'% on the work that was handed in)');
   return L;
 }
@@ -3863,6 +3877,8 @@ function buildParentMonthlyMessage(parent,child,teacherName){
   if(st.missing.length){ L.push(''); L.push('Still to hand in: '+st.missing.map(a=>a.title).join(', ')); }
   L.push('');
   L.push(overallComment(name,st));
+  L.push('');
+  L.push(supportLine(name));
   L.push('');
   L.push(teacherName||'Ms. Zahra');
   return L.join('\n');
@@ -3892,6 +3908,8 @@ function buildParentOverallMessage(parent,child,teacherName){
   L.push('');
   L.push(overallComment(name,st));
   L.push('');
+  L.push(supportLine(name));
+  L.push('');
   L.push(teacherName||'Ms. Zahra');
   return L.join('\n');
 }
@@ -3911,6 +3929,8 @@ function buildParentMessage(parent,child,teacherName){
   if(st.missing.length){ L.push(''); L.push('Not handed in: '+st.missing.map(a=>a.title).join(', ')); }
   L.push('');
   L.push(overallComment(name,st));
+  L.push('');
+  L.push(supportLine(name));
   L.push('');
   L.push(teacherName||'Ms. Zahra');
   return L.join('\n');
